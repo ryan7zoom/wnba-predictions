@@ -127,62 +127,70 @@ def get_todays_games(date=TODAY):
     return games
 
 
-# ---------- rest days ----------
+# ---------- rest days & team season stats ----------
+#
+# ESPN's dedicated team-statistics endpoint (sports.core.api.espn.com/.../
+# statistics) is widely reported as unreliable for some sports - either
+# missing fields or returning all zeros. Rather than depend on it, we derive
+# points-for/points-against directly from each team's completed games via
+# the schedule endpoint, which is verified-working (same call already used
+# for rest-day calculation, so this doesn't add extra requests).
 
-def get_team_schedule(team_id, season=SEASON):
+def get_team_schedule_events(team_id, season=SEASON):
     payload = espn_site_get(f"/teams/{team_id}/schedule", {"season": season})
-    events = payload.get("events", [])
+    return payload.get("events", [])
+
+
+def get_days_rest(team_id, before_date_str=TODAY, season=SEASON):
+    events = get_team_schedule_events(team_id, season)
     dates = []
     for e in events:
         try:
             dt = datetime.strptime(e["date"][:10], "%Y-%m-%d")
-            dates.append(dt)
         except (KeyError, ValueError):
             continue
-    return sorted(dates)
-
-
-def get_days_rest(team_id, before_date_str=TODAY, season=SEASON):
-    before_date = datetime.strptime(before_date_str, "%Y%m%d")
-    dates = [d for d in get_team_schedule(team_id, season) if d < before_date]
+        if dt < datetime.strptime(before_date_str, "%Y%m%d"):
+            dates.append(dt)
     if not dates:
         return None
+    before_date = datetime.strptime(before_date_str, "%Y%m%d")
     return (before_date - max(dates)).days
 
 
-# ---------- team season stats (for spread model) ----------
-
 def get_team_season_stats(team_id, season=SEASON):
     """
-    Points for/against per game, from ESPN's team statistics endpoint.
-    Returns None if the team has no games played yet or the call fails.
-
-    NOTE: the exact stat "name" fields ESPN uses here (avgPoints etc.) were
-    not independently verified against a live response before first run -
-    if this keeps returning None for every team, print the raw
-    stats_by_name dict (uncomment the debug line below) to see the actual
-    field names ESPN returns and fix the lookups below.
+    Points for/against per game, computed from this team's completed games
+    this season (via the schedule endpoint's per-event score data), not
+    from ESPN's separate team-statistics endpoint - that endpoint is known
+    to be unreliable/empty for some sports. Returns None if no completed
+    games are found yet.
     """
-    try:
-        payload = espn_core_get(
-            f"/seasons/{season}/types/2/teams/{team_id}/statistics"
-        )
-    except Exception:
+    events = get_team_schedule_events(team_id, season)
+    pts_for, pts_against, games_counted = 0, 0, 0
+
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not this_team or not opponent:
+            continue
+        try:
+            pts_for += int(this_team.get("score", {}).get("value", this_team.get("score")))
+            pts_against += int(opponent.get("score", {}).get("value", opponent.get("score")))
+            games_counted += 1
+        except (TypeError, ValueError):
+            continue
+
+    if games_counted == 0:
         return None
-
-    stats_by_name = {}
-    for category in payload.get("splits", {}).get("categories", []):
-        for stat in category.get("stats", []):
-            stats_by_name[stat.get("name")] = stat.get("value")
-
-    # Uncomment to debug field names on a real run:
-    # print(f"DEBUG team {team_id} stat names: {sorted(stats_by_name.keys())}")
-
-    pts_pg = stats_by_name.get("avgPoints")
-    pts_allowed_pg = stats_by_name.get("avgPointsAgainst") or stats_by_name.get("opponentPointsPerGame")
-    if pts_pg is None or pts_allowed_pg is None:
-        return None
-    return {"pts_pg": pts_pg, "pts_allowed_pg": pts_allowed_pg}
+    return {
+        "pts_pg": round(pts_for / games_counted, 2),
+        "pts_allowed_pg": round(pts_against / games_counted, 2),
+        "games_counted": games_counted,
+    }
 
 
 def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
