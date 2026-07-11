@@ -34,7 +34,6 @@ TODAY = datetime.utcnow().strftime("%Y%m%d")
 SEASON = 2026
 
 STARTERS_PER_TEAM = 5
-IMPORTANCE_RANK = 2  # a missing player among a team's top-2 scorers gets flagged
 PROP_GAMES_SAMPLE = 10
 PROP_THRESHOLDS = {
     "points": (10, 15, 20, 25),
@@ -217,58 +216,58 @@ def apply_rest_adjustment(prob, team_a_rest, team_b_rest, points_per_rest_day=0.
 
 
 # ---------- roster / starters ----------
+#
+# Earlier version ranked starters by fetching every roster player's season
+# stats individually (~15 calls per team) just to sort by minutes. That was
+# too slow - with retries/delays across ~15 teams x ~15 players it blew past
+# the workflow's 10-minute timeout. This version instead pulls the box score
+# of the team's most recent completed game, where ESPN explicitly marks each
+# player as a starter (starter: true/false) - one call per team instead of
+# fifteen.
 
-def get_team_roster(team_id, season=SEASON):
-    payload = espn_site_get(f"/teams/{team_id}/roster", {"season": season})
-    athletes = payload.get("athletes", [])
-    # ESPN sometimes groups roster by position; flatten if needed
-    if athletes and isinstance(athletes[0], dict) and "items" in athletes[0]:
-        flat = []
-        for group in athletes:
-            flat.extend(group.get("items", []))
-        athletes = flat
-    return athletes
-
-
-def get_player_season_stats(athlete_id, season=SEASON):
-    """Per-game season averages for minutes/points, used to rank starters."""
-    try:
-        payload = espn_core_get(
-            f"/seasons/{season}/types/2/athletes/{athlete_id}/statistics"
-        )
-    except Exception:
+def get_team_last_completed_event_id(team_id, season=SEASON):
+    payload = espn_site_get(f"/teams/{team_id}/schedule", {"season": season})
+    events = payload.get("events", [])
+    completed = [
+        e for e in events
+        if e.get("competitions", [{}])[0].get("status", {}).get("type", {}).get("completed")
+    ]
+    if not completed:
         return None
-    stats_by_name = {}
-    for category in payload.get("splits", {}).get("categories", []):
-        for stat in category.get("stats", []):
-            stats_by_name[stat.get("name")] = stat.get("value")
-    return {
-        "min_pg": stats_by_name.get("avgMinutes"),
-        "pts_pg": stats_by_name.get("avgPoints"),
-    }
+    completed.sort(key=lambda e: e.get("date", ""))
+    return completed[-1].get("id")
 
 
 def get_team_starters(team_id, season=SEASON):
     """
-    Approximates 'starters' as the top-N players on the roster by minutes
-    per game. ESPN doesn't expose a clean 'is starter' flag on the season
-    roster endpoint, so minutes-per-game is used as the proxy - starters
-    play the most minutes almost by definition. This can occasionally
-    mislabel a high-minutes bench player ahead of an injured starter.
+    Returns up to STARTERS_PER_TEAM players who started the team's most
+    recent completed game, via that game's box score. Falls back to an
+    empty list (rather than guessing) if no completed game is found yet
+    this season or the box score doesn't include starter flags.
     """
-    roster = get_team_roster(team_id, season)
-    ranked = []
-    for player in roster:
-        athlete_id = player.get("id")
-        name = player.get("fullName") or player.get("displayName")
-        if not athlete_id:
+    event_id = get_team_last_completed_event_id(team_id, season)
+    if not event_id:
+        return []
+
+    try:
+        payload = espn_web_get("/summary", {"event": event_id})
+    except Exception:
+        return []
+
+    starters = []
+    for team_box in payload.get("boxscore", {}).get("players", []):
+        if str(team_box.get("team", {}).get("id")) != str(team_id):
             continue
-        stats = get_player_season_stats(athlete_id, season)
-        if not stats or stats.get("min_pg") is None:
-            continue
-        ranked.append({"id": athlete_id, "name": name, "min_pg": stats["min_pg"], "pts_pg": stats.get("pts_pg")})
-    ranked.sort(key=lambda p: p["min_pg"], reverse=True)
-    return ranked[:STARTERS_PER_TEAM]
+        for stat_group in team_box.get("statistics", []):
+            for athlete_entry in stat_group.get("athletes", []):
+                if not athlete_entry.get("starter"):
+                    continue
+                athlete = athlete_entry.get("athlete", {})
+                starters.append({
+                    "id": athlete.get("id"),
+                    "name": athlete.get("displayName") or athlete.get("fullName"),
+                })
+    return starters[:STARTERS_PER_TEAM]
 
 
 # ---------- player prop floors ----------
@@ -356,7 +355,9 @@ def get_team_injuries(team_id):
 
 def flag_missing_starters(team_id, season=SEASON):
     starters = get_team_starters(team_id, season)
-    top_names = {p["name"] for p in starters[:IMPORTANCE_RANK]}
+    if not starters:
+        return ["Starter lineup unavailable (no completed game yet this season, or box score data missing) - verify starters manually before betting this game."]
+    starter_names = {p["name"] for p in starters}
 
     injuries = get_team_injuries(team_id)
     if injuries is None:
@@ -367,9 +368,9 @@ def flag_missing_starters(team_id, season=SEASON):
         athlete = inj.get("athlete", {})
         name = athlete.get("displayName") or athlete.get("fullName")
         status = inj.get("status", "")
-        if name in top_names and status.lower() not in ("probable", "active", "available"):
+        if name in starter_names and status.lower() not in ("probable", "active", "available"):
             flags.append(
-                f"{name} listed as {status} - among team's top {IMPORTANCE_RANK} scorers. "
+                f"{name} listed as {status} - started the team's most recent game. "
                 f"Treat this team's props and spread with extra caution."
             )
     return flags
