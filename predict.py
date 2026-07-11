@@ -1,16 +1,19 @@
 """
 WNBA Daily Probability System
-- Player prop floor probabilities (e.g. P(15+ PTS), P(6+ REB), P(4+ AST))
+- Player prop floor probabilities for starters (e.g. P(15+ PTS), P(6+ REB), P(4+ AST))
 - Team spread-cover probabilities (based on point-differential model)
 - Missing-star flagging (informational, not modeled into the math)
 
-Data sources:
-- stats.wnba.com (unofficial, same platform family as stats.nba.com, LeagueID=10)
-- ESPN WNBA injuries endpoint (unofficial, used as the missing-player signal)
+Data source: ESPN's public site.api.espn.com endpoints (unofficial/undocumented,
+but widely used and reliable - same platform wehoop's espn_wnba_* functions use).
 
-No API key needed. For individual/non-commercial use. Both sources are
-undocumented and can change or break without notice - this is the same
-tradeoff as the MLB Stats API script.
+stats.wnba.com was tried first but hangs on direct API calls even from a normal
+residential connection (confirmed by hand, not just from GitHub Actions), so this
+version uses ESPN exclusively for everything - schedule, team stats, rosters,
+player game logs, and injuries - instead of mixing two sources.
+
+No API key needed. For individual/non-commercial use. This is still an
+undocumented API and can change or break without notice.
 
 Output: docs/index.html (phone-friendly page) + docs/report.json, for GitHub Pages.
 """
@@ -24,49 +27,33 @@ import urllib.parse
 import urllib.error
 import os
 
-STATS_BASE = "https://stats.wnba.com/stats"
-ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
-TODAY = datetime.utcnow().strftime("%Y-%m-%d")
-SEASON = "2026"
-LEAGUE_ID = "10"
+ESPN_SITE_BASE = "https://site.api.espn.com/apis/site/v2/sports/basketball/wnba"
+ESPN_WEB_BASE = "https://site.web.api.espn.com/apis/site/v2/sports/basketball/wnba"
+ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba"
+TODAY = datetime.utcnow().strftime("%Y%m%d")
+SEASON = 2026
 
-# stats.wnba.com requires NBA-family headers or it 403s - same header set
-# nba_api/wehoop use under the hood. This is undocumented behavior, not
-# officially guaranteed to keep working.
-STATS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://stats.wnba.com/",
-    "Origin": "https://stats.wnba.com",
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-    "Connection": "keep-alive",
+STARTERS_PER_TEAM = 5
+IMPORTANCE_RANK = 2  # a missing player among a team's top-2 scorers gets flagged
+PROP_GAMES_SAMPLE = 10
+PROP_THRESHOLDS = {
+    "points": (10, 15, 20, 25),
+    "rebounds": (4, 6, 8),
+    "assists": (2, 4, 6),
 }
 
-# A player is flagged as "important" for missing-player purposes if their
-# season usage rate is at/above this percentile within their own team's
-# rotation. This is a blunt, transparent threshold on purpose - see
-# flag_missing_starters() docstring for why we don't try to model the
-# downstream effect numerically.
-IMPORTANCE_USAGE_RANK = 2  # flag if player is top-2 on their team by usage%
+REQUEST_DELAY_SECONDS = 0.4
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 4
 
 
 # ---------- low-level fetch ----------
-#
-# stats.wnba.com in particular is prone to slow/hanging responses under
-# repeated calls in a short window (this script makes dozens of calls per
-# run). A single TimeoutError on any one call kills the whole workflow, so
-# every fetch retries with backoff before giving up. A small delay between
-# calls also reduces the chance of being throttled in the first place.
-# This is a mitigation, not a guarantee - an undocumented API can still
-# fail outright.
 
-REQUEST_DELAY_SECONDS = 0.6
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 5
-
-def _fetch_with_retry(req, timeout=25):
+def _fetch_with_retry(url, timeout=20):
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    })
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -81,202 +68,132 @@ def _fetch_with_retry(req, timeout=25):
     raise last_error
 
 
-def stats_get(endpoint, params=None):
-    url = f"{STATS_BASE}/{endpoint}"
+def espn_site_get(path, params=None):
+    url = f"{ESPN_SITE_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers=STATS_HEADERS)
-    return _fetch_with_retry(req)
+    return _fetch_with_retry(url)
 
 
-def espn_get(path, params=None):
-    url = f"{ESPN_BASE}{path}"
+def espn_web_get(path, params=None):
+    url = f"{ESPN_WEB_BASE}{path}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    return _fetch_with_retry(req)
+    return _fetch_with_retry(url)
 
 
-# ---------- team ID crosswalk (stats.wnba.com <-> ESPN) ----------
-#
-# stats.wnba.com and ESPN use two completely different numeric team ID
-# systems, and there's no documented free endpoint that maps one to the
-# other directly. Instead of hardcoding a table that silently goes stale if
-# a team ID ever changes, we build the crosswalk at runtime by matching on
-# team abbreviation (e.g. "LV", "NY", "IND"), which both sources expose
-# reliably. This self-heals across seasons/expansion teams instead of
-# requiring a manual edit.
+def espn_core_get(url_or_path, params=None):
+    url = url_or_path if url_or_path.startswith("http") else f"{ESPN_CORE_BASE}{url_or_path}"
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    return _fetch_with_retry(url)
 
-def build_espn_team_id_crosswalk():
-    """Returns {stats_wnba_team_id: espn_team_id}, keyed by matching abbreviation."""
-    stats_payload = stats_get("leaguedashteamstats", {
-        "LeagueID": LEAGUE_ID,
-        "Season": SEASON,
-        "SeasonType": "Regular Season",
-        "MeasureType": "Base",
-        "PerMode": "PerGame",
-    })
-    stats_rows = stats_result_to_rows(stats_payload)
-    stats_abbr_to_id = {r["TEAM_ABBREVIATION"]: r["TEAM_ID"] for r in stats_rows}
 
-    espn_payload = espn_get("/teams")
-    espn_teams = espn_payload.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
+# ---------- teams ----------
 
-    crosswalk = {}
-    unmatched = []
-    for t in espn_teams:
+def get_all_teams():
+    payload = espn_site_get("/teams")
+    teams_raw = payload.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
+    teams = []
+    for t in teams_raw:
         team = t.get("team", {})
-        abbr = team.get("abbreviation", "")
-        espn_id = team.get("id")
-        # normalize a couple of known abbreviation mismatches between the
-        # two systems (stats.wnba.com vs ESPN sometimes differ slightly)
-        abbr_aliases = {"GS": "GSV", "GSV": "GS"}
-        stats_id = stats_abbr_to_id.get(abbr) or stats_abbr_to_id.get(abbr_aliases.get(abbr, ""))
-        if stats_id and espn_id:
-            crosswalk[stats_id] = espn_id
-        else:
-            unmatched.append(abbr)
-    return crosswalk, unmatched
-
-
-def stats_result_to_rows(payload, result_set_name=None):
-    """
-    stats.wnba.com responses come back as {"resultSets": [{"name":..,
-    "headers": [...], "rowSet": [[...], ...]}]}. Convert to list-of-dicts.
-    """
-    result_sets = payload.get("resultSets") or payload.get("resultSet")
-    if result_sets is None:
-        return []
-    if isinstance(result_sets, dict):
-        result_sets = [result_sets]
-    for rs in result_sets:
-        if result_set_name is None or rs.get("name") == result_set_name:
-            headers = rs["headers"]
-            return [dict(zip(headers, row)) for row in rs["rowSet"]]
-    return []
+        teams.append({
+            "id": team.get("id"),
+            "abbreviation": team.get("abbreviation"),
+            "display_name": team.get("displayName"),
+        })
+    return teams
 
 
 # ---------- schedule ----------
 
 def get_todays_games(date=TODAY):
-    payload = stats_get("scoreboardv2", {
-        "GameDate": date,
-        "LeagueID": LEAGUE_ID,
-        "DayOffset": "0",
-    })
-    game_header = stats_result_to_rows(payload, "GameHeader")
-    line_score = stats_result_to_rows(payload, "LineScore")
-
-    teams_by_game = {}
-    for row in line_score:
-        teams_by_game.setdefault(row["GAME_ID"], []).append(row)
-
+    payload = espn_site_get("/scoreboard", {"dates": date})
+    events = payload.get("events", [])
     games = []
-    for g in game_header:
-        gid = g["GAME_ID"]
-        teams = teams_by_game.get(gid, [])
-        home = next((t for t in teams if t["TEAM_ID"] == g["HOME_TEAM_ID"]), None)
-        away = next((t for t in teams if t["TEAM_ID"] == g["VISITOR_TEAM_ID"]), None)
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        competitors = comp.get("competitors", [])
+        home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+        away = next((c for c in competitors if c.get("homeAway") == "away"), None)
         if not home or not away:
             continue
         games.append({
-            "game_id": gid,
-            "home_team_id": home["TEAM_ID"],
-            "home_team_abbr": home["TEAM_ABBREVIATION"],
-            "home_team_name": home.get("TEAM_CITY_NAME", "") + " " + home.get("TEAM_NICKNAME", ""),
-            "away_team_id": away["TEAM_ID"],
-            "away_team_abbr": away["TEAM_ABBREVIATION"],
-            "away_team_name": away.get("TEAM_CITY_NAME", "") + " " + away.get("TEAM_NICKNAME", ""),
+            "event_id": e.get("id"),
+            "home_team_id": home["team"]["id"],
+            "home_team_abbr": home["team"].get("abbreviation"),
+            "away_team_id": away["team"]["id"],
+            "away_team_abbr": away["team"].get("abbreviation"),
         })
     return games
 
 
 # ---------- rest days ----------
 
-def get_team_last_game_date(team_id, before_date=TODAY):
-    """Days since a team's last game, for back-to-back detection."""
-    payload = stats_get("leaguegamefinder", {
-        "TeamID": team_id,
-        "LeagueID": LEAGUE_ID,
-        "Season": SEASON,
-        "SeasonType": "Regular Season",
-    })
-    rows = stats_result_to_rows(payload)
-    if not rows:
-        return None
-    dates = sorted(
-        [datetime.strptime(r["GAME_DATE"], "%Y-%m-%d") for r in rows
-         if r["GAME_DATE"] < before_date],
-        reverse=True
-    )
+def get_team_schedule(team_id, season=SEASON):
+    payload = espn_site_get(f"/teams/{team_id}/schedule", {"season": season})
+    events = payload.get("events", [])
+    dates = []
+    for e in events:
+        try:
+            dt = datetime.strptime(e["date"][:10], "%Y-%m-%d")
+            dates.append(dt)
+        except (KeyError, ValueError):
+            continue
+    return sorted(dates)
+
+
+def get_days_rest(team_id, before_date_str=TODAY, season=SEASON):
+    before_date = datetime.strptime(before_date_str, "%Y%m%d")
+    dates = [d for d in get_team_schedule(team_id, season) if d < before_date]
     if not dates:
         return None
-    days_rest = (datetime.strptime(before_date, "%Y-%m-%d") - dates[0]).days
-    return days_rest
+    return (before_date - max(dates)).days
 
 
 # ---------- team season stats (for spread model) ----------
 
-def get_team_season_stats(season=SEASON):
-    payload = stats_get("leaguedashteamstats", {
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-        "MeasureType": "Base",
-        "PerMode": "PerGame",
-    })
-    rows = stats_result_to_rows(payload)
-    by_team = {}
-    for r in rows:
-        by_team[r["TEAM_ID"]] = {
-            "team_name": r["TEAM_NAME"],
-            "pts_pg": r["PTS"],
-            "pts_allowed_pg": None,  # Base measure type doesn't include opponent pts; filled below
-            "gp": r["GP"],
-        }
-    # Opponent points allowed requires the "Opponent" measure type
-    payload_opp = stats_get("leaguedashteamstats", {
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-        "MeasureType": "Opponent",
-        "PerMode": "PerGame",
-    })
-    rows_opp = stats_result_to_rows(payload_opp)
-    for r in rows_opp:
-        if r["TEAM_ID"] in by_team:
-            by_team[r["TEAM_ID"]]["pts_allowed_pg"] = r.get("OPP_PTS")
-    return by_team
-
-
-def get_head_to_head(team_a_id, team_b_id, season=SEASON):
+def get_team_season_stats(team_id, season=SEASON):
     """
-    This-season games between these two specific teams. With only 12 teams,
-    each pair meets multiple times a season, so this sample is usable in a
-    way it wouldn't be in a 30-team league.
+    Points for/against per game, from ESPN's team statistics endpoint.
+    Returns None if the team has no games played yet or the call fails.
+
+    NOTE: the exact stat "name" fields ESPN uses here (avgPoints etc.) were
+    not independently verified against a live response before first run -
+    if this keeps returning None for every team, print the raw
+    stats_by_name dict (uncomment the debug line below) to see the actual
+    field names ESPN returns and fix the lookups below.
     """
-    payload = stats_get("leaguegamefinder", {
-        "TeamID": team_a_id,
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-        "VsTeamID": team_b_id,
-    })
-    rows = stats_result_to_rows(payload)
-    return rows
+    try:
+        payload = espn_core_get(
+            f"/seasons/{season}/types/2/teams/{team_id}/statistics"
+        )
+    except Exception:
+        return None
+
+    stats_by_name = {}
+    for category in payload.get("splits", {}).get("categories", []):
+        for stat in category.get("stats", []):
+            stats_by_name[stat.get("name")] = stat.get("value")
+
+    # Uncomment to debug field names on a real run:
+    # print(f"DEBUG team {team_id} stat names: {sorted(stats_by_name.keys())}")
+
+    pts_pg = stats_by_name.get("avgPoints")
+    pts_allowed_pg = stats_by_name.get("avgPointsAgainst") or stats_by_name.get("opponentPointsPerGame")
+    if pts_pg is None or pts_allowed_pg is None:
+        return None
+    return {"pts_pg": pts_pg, "pts_allowed_pg": pts_allowed_pg}
 
 
 def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
     """
     Normal approximation of WNBA point-differential margin.
-    std_dev ~11 points is a rough single-game margin std dev for the WNBA
-    (smaller scoring totals than NBA, so a smaller std dev than NBA's ~13).
-    This is an approximation, not derived from a full historical fit -
-    treat outputs as directional.
+    std_dev ~11 points is a rough single-game margin std dev for the WNBA -
+    an approximation, not derived from a full historical fit. Treat outputs
+    as directional, not precise.
     """
     if not team_a_stats or not team_b_stats:
-        return None
-    if team_a_stats.get("pts_allowed_pg") is None or team_b_stats.get("pts_allowed_pg") is None:
         return None
     expected_margin = (team_a_stats["pts_pg"] - team_a_stats["pts_allowed_pg"]) - \
                        (team_b_stats["pts_pg"] - team_b_stats["pts_allowed_pg"])
@@ -287,31 +204,98 @@ def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
 
 def apply_rest_adjustment(prob, team_a_rest, team_b_rest, points_per_rest_day=0.02):
     """
-    Mild adjustment to a cover probability based on rest differential.
-    A team on a back-to-back (0 days rest) vs an opponent with 2+ days rest
-    is a meaningfully worse spot in the WNBA's heavier-minutes rotations.
-    Dampened deliberately - this is directional, not a precise fit.
+    Mild adjustment based on rest differential. A team on a back-to-back
+    (0 days rest) vs a well-rested opponent is a meaningfully worse spot in
+    the WNBA's heavier-minutes rotations. Dampened deliberately - directional,
+    not a precise fit.
     """
     if prob is None or team_a_rest is None or team_b_rest is None:
         return prob
-    rest_diff = team_a_rest - team_b_rest
-    rest_diff = max(-3, min(3, rest_diff))  # cap the effect
+    rest_diff = max(-3, min(3, team_a_rest - team_b_rest))
     adjusted = prob + (rest_diff * points_per_rest_day)
     return round(max(0.0, min(1.0, adjusted)), 3)
 
 
+# ---------- roster / starters ----------
+
+def get_team_roster(team_id, season=SEASON):
+    payload = espn_site_get(f"/teams/{team_id}/roster", {"season": season})
+    athletes = payload.get("athletes", [])
+    # ESPN sometimes groups roster by position; flatten if needed
+    if athletes and isinstance(athletes[0], dict) and "items" in athletes[0]:
+        flat = []
+        for group in athletes:
+            flat.extend(group.get("items", []))
+        athletes = flat
+    return athletes
+
+
+def get_player_season_stats(athlete_id, season=SEASON):
+    """Per-game season averages for minutes/points, used to rank starters."""
+    try:
+        payload = espn_core_get(
+            f"/seasons/{season}/types/2/athletes/{athlete_id}/statistics"
+        )
+    except Exception:
+        return None
+    stats_by_name = {}
+    for category in payload.get("splits", {}).get("categories", []):
+        for stat in category.get("stats", []):
+            stats_by_name[stat.get("name")] = stat.get("value")
+    return {
+        "min_pg": stats_by_name.get("avgMinutes"),
+        "pts_pg": stats_by_name.get("avgPoints"),
+    }
+
+
+def get_team_starters(team_id, season=SEASON):
+    """
+    Approximates 'starters' as the top-N players on the roster by minutes
+    per game. ESPN doesn't expose a clean 'is starter' flag on the season
+    roster endpoint, so minutes-per-game is used as the proxy - starters
+    play the most minutes almost by definition. This can occasionally
+    mislabel a high-minutes bench player ahead of an injured starter.
+    """
+    roster = get_team_roster(team_id, season)
+    ranked = []
+    for player in roster:
+        athlete_id = player.get("id")
+        name = player.get("fullName") or player.get("displayName")
+        if not athlete_id:
+            continue
+        stats = get_player_season_stats(athlete_id, season)
+        if not stats or stats.get("min_pg") is None:
+            continue
+        ranked.append({"id": athlete_id, "name": name, "min_pg": stats["min_pg"], "pts_pg": stats.get("pts_pg")})
+    ranked.sort(key=lambda p: p["min_pg"], reverse=True)
+    return ranked[:STARTERS_PER_TEAM]
+
+
 # ---------- player prop floors ----------
 
-def get_player_recent_games(player_id, season=SEASON, last_n=10):
-    payload = stats_get("playergamelog", {
-        "PlayerID": player_id,
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-    })
-    rows = stats_result_to_rows(payload)
-    rows = sorted(rows, key=lambda r: r["GAME_DATE"], reverse=True)
-    return rows[:last_n]
+def get_player_recent_gamelog(athlete_id, season=SEASON, last_n=PROP_GAMES_SAMPLE):
+    try:
+        payload = espn_web_get(f"/athletes/{athlete_id}/gamelog", {"season": season})
+    except Exception:
+        return []
+    events = payload.get("events", {})
+    season_types = payload.get("seasonTypes", [])
+    game_ids_in_order = []
+    for st in season_types:
+        for cat in st.get("categories", []):
+            for evt in cat.get("events", []):
+                game_ids_in_order.append(evt.get("eventId"))
+
+    games = []
+    names = payload.get("names", [])  # stat column names, aligned to each event's "stats" list
+    for gid in game_ids_in_order:
+        evt = events.get(gid) if isinstance(events, dict) else None
+        if not evt:
+            continue
+        stat_values = evt.get("stats", [])
+        stat_map = dict(zip(names, stat_values))
+        games.append(stat_map)
+    return games[-last_n:] if games else []
 
 
 def prop_floor_probs(games, stat_key, thresholds):
@@ -319,7 +303,13 @@ def prop_floor_probs(games, stat_key, thresholds):
     n = len(games)
     if n == 0:
         return {}
-    values = [float(g.get(stat_key, 0) or 0) for g in games]
+    values = []
+    for g in games:
+        raw = g.get(stat_key, 0)
+        try:
+            values.append(float(raw))
+        except (TypeError, ValueError):
+            values.append(0.0)
     probs = {}
     for t in thresholds:
         hits = sum(1 for v in values if v >= t)
@@ -327,74 +317,16 @@ def prop_floor_probs(games, stat_key, thresholds):
     return probs
 
 
-def get_team_roster_with_usage(team_id, season=SEASON):
-    """
-    Returns players on a team with season usage%, sorted descending.
-    Used both to identify who counts as 'important' for the missing-player
-    flag, and to select starters for prop tracking.
-    """
-    payload = stats_get("leaguedashplayerstats", {
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-        "MeasureType": "Advanced",
-        "PerMode": "PerGame",
-        "TeamID": team_id,
-    })
-    rows = stats_result_to_rows(payload)
-    rows = sorted(rows, key=lambda r: r.get("USG_PCT", 0) or 0, reverse=True)
-    return rows
-
-
-# ---------- starter selection ----------
-#
-# "Starters" isn't directly exposed as a clean flag on leaguedashplayerstats,
-# so we approximate it using minutes per game (MIN) from the Base measure
-# type: the top-5 players by MIN on a team are treated as the starting unit.
-# This is a reasonable proxy - starters play the most minutes almost by
-# definition - but it can occasionally mislabel a high-minutes sixth player
-# ahead of an injured/rotating starter. Good enough for "don't bet bench
-# guys" without needing a scraped depth chart.
-STARTERS_PER_TEAM = 5
-
-def get_team_starters(team_id, season=SEASON):
-    payload = stats_get("leaguedashplayerstats", {
-        "LeagueID": LEAGUE_ID,
-        "Season": season,
-        "SeasonType": "Regular Season",
-        "MeasureType": "Base",
-        "PerMode": "PerGame",
-        "TeamID": team_id,
-    })
-    rows = stats_result_to_rows(payload)
-    rows = sorted(rows, key=lambda r: r.get("MIN", 0) or 0, reverse=True)
-    return rows[:STARTERS_PER_TEAM]
-
-
-PROP_THRESHOLDS = {
-    "PTS": (10, 15, 20, 25),
-    "REB": (4, 6, 8),
-    "AST": (2, 4, 6),
-}
-
-def get_player_props(team_id, season=SEASON, last_n=10):
-    """
-    Prop floor probabilities for each starter on a team, using their last
-    N games. Returns a list of per-player dicts with PTS/REB/AST floors.
-    """
+def get_player_props(team_id, season=SEASON):
     starters = get_team_starters(team_id, season)
     results = []
     for p in starters:
-        player_id = p.get("PLAYER_ID")
-        name = p.get("PLAYER_NAME")
-        if not player_id:
-            continue
-        games = get_player_recent_games(player_id, season, last_n)
+        games = get_player_recent_gamelog(p["id"], season)
         floors = {}
         for stat_key, thresholds in PROP_THRESHOLDS.items():
             floors[stat_key] = prop_floor_probs(games, stat_key, thresholds)
         results.append({
-            "name": name,
+            "name": p["name"],
             "games_sampled": len(games),
             "floors": floors,
         })
@@ -407,46 +339,37 @@ def get_player_props(team_id, season=SEASON, last_n=10):
 # props/spread numbers based on who's missing. That requires real judgment
 # (who absorbs the missing shots, how much) that a blunt formula would get
 # wrong while looking precise. Instead we surface a plain flag - "this team
-# is missing a top-usage player" - so the probabilities stay clean and the
-# human makes the judgment call on affected games.
+# is missing a top scorer" - so the probabilities stay clean and the human
+# makes the judgment call on affected games.
 #
 # ESPN's injuries endpoint is pregame/official-confirmation speed, not
 # Twitter-breaking-news speed. Beat reporters on X will usually know before
 # this does. This is a known limitation, not something to paper over.
 
-def get_espn_team_injuries(espn_team_id):
+def get_team_injuries(team_id):
     try:
-        payload = espn_get(f"/teams/{espn_team_id}/injuries")
+        payload = espn_site_get(f"/teams/{team_id}/injuries")
         return payload.get("injuries", [])
     except Exception:
-        return []
+        return None  # None = check failed; [] = check succeeded, nobody out
 
 
-def flag_missing_starters(team_id, espn_team_id, season=SEASON):
-    """
-    Returns a list of plain-language flags for this team, e.g.
-    ["Missing A'ja Wilson (team's #1 in usage%) - treat props/spread with caution"]
-    Empty list if nothing notable or if data wasn't available (fails quiet,
-    not silent - the report should show 'injury check unavailable' rather
-    than pretend an empty list means 'confirmed nobody is out').
-    """
+def flag_missing_starters(team_id, season=SEASON):
+    starters = get_team_starters(team_id, season)
+    top_names = {p["name"] for p in starters[:IMPORTANCE_RANK]}
+
+    injuries = get_team_injuries(team_id)
+    if injuries is None:
+        return ["Injury check unavailable - verify starters manually before betting this game."]
+
     flags = []
-    try:
-        roster = get_team_roster_with_usage(team_id, season)
-        important_names = {
-            r["PLAYER_NAME"] for r in roster[:IMPORTANCE_USAGE_RANK]
-        }
-    except Exception:
-        return ["Injury/usage check unavailable - verify starters manually before betting this game."]
-
-    injuries = get_espn_team_injuries(espn_team_id)
     for inj in injuries:
         athlete = inj.get("athlete", {})
-        name = athlete.get("displayName")
+        name = athlete.get("displayName") or athlete.get("fullName")
         status = inj.get("status", "")
-        if name in important_names and status.lower() not in ("probable", "available"):
+        if name in top_names and status.lower() not in ("probable", "active", "available"):
             flags.append(
-                f"{name} listed as {status} - among team's top {IMPORTANCE_USAGE_RANK} in usage%. "
+                f"{name} listed as {status} - among team's top {IMPORTANCE_RANK} scorers. "
                 f"Treat this team's props and spread with extra caution."
             )
     return flags
@@ -456,31 +379,21 @@ def flag_missing_starters(team_id, espn_team_id, season=SEASON):
 
 def build_report():
     games = get_todays_games()
-    team_stats = get_team_season_stats()
-
-    # Built live each run by matching team abbreviations between
-    # stats.wnba.com and ESPN - see build_espn_team_id_crosswalk().
-    try:
-        espn_crosswalk, unmatched_abbrs = build_espn_team_id_crosswalk()
-    except Exception:
-        espn_crosswalk, unmatched_abbrs = {}, []
-
     report = []
+
     for g in games:
-        home_rest = get_team_last_game_date(g["home_team_id"])
-        away_rest = get_team_last_game_date(g["away_team_id"])
-        home_stats = team_stats.get(g["home_team_id"])
-        away_stats = team_stats.get(g["away_team_id"])
+        home_id, away_id = g["home_team_id"], g["away_team_id"]
 
-        home_espn_id = espn_crosswalk.get(g["home_team_id"])
-        away_espn_id = espn_crosswalk.get(g["away_team_id"])
-        home_flags = flag_missing_starters(g["home_team_id"], home_espn_id) if home_espn_id else \
-            ["ESPN team ID crosswalk failed for this team - injury check skipped. Verify starters manually."]
-        away_flags = flag_missing_starters(g["away_team_id"], away_espn_id) if away_espn_id else \
-            ["ESPN team ID crosswalk failed for this team - injury check skipped. Verify starters manually."]
+        home_rest = get_days_rest(home_id)
+        away_rest = get_days_rest(away_id)
+        home_stats = get_team_season_stats(home_id)
+        away_stats = get_team_season_stats(away_id)
 
-        home_props = get_player_props(g["home_team_id"])
-        away_props = get_player_props(g["away_team_id"])
+        home_flags = flag_missing_starters(home_id)
+        away_flags = flag_missing_starters(away_id)
+
+        home_props = get_player_props(home_id)
+        away_props = get_player_props(away_id)
 
         entry = {
             "matchup": f"{g['away_team_abbr']} @ {g['home_team_abbr']}",
@@ -580,4 +493,18 @@ if __name__ == "__main__":
         json.dump(report, f, indent=2, default=str)
     with open("docs/index.html", "w") as f:
         f.write(render_html(report))
+
+    # Quick self-check printed to the Actions log, so a broken data source
+    # is visible immediately instead of only showing up as an empty-looking
+    # page later.
+    games_with_spread_data = sum(
+        1 for g in report if any(s["home_cover_prob"] is not None for s in g["spread_lines"])
+    )
+    games_with_props = sum(1 for g in report if g["home_players"] or g["away_players"])
     print(f"Done. {len(report)} games processed.")
+    print(f"  Spread data available for {games_with_spread_data}/{len(report)} games.")
+    print(f"  Player props available for {games_with_props}/{len(report)} games.")
+    if len(report) > 0 and games_with_spread_data == 0:
+        print("  WARNING: no spread data on any game - check get_team_season_stats() field names.")
+    if len(report) > 0 and games_with_props == 0:
+        print("  WARNING: no player props on any game - check get_player_recent_gamelog() field names.")
