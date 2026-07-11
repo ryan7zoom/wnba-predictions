@@ -17,9 +17,11 @@ Output: docs/index.html (phone-friendly page) + docs/report.json, for GitHub Pag
 
 import json
 import math
+import time
 from datetime import datetime, timedelta
 import urllib.request
 import urllib.parse
+import urllib.error
 import os
 
 STATS_BASE = "https://stats.wnba.com/stats"
@@ -51,14 +53,40 @@ IMPORTANCE_USAGE_RANK = 2  # flag if player is top-2 on their team by usage%
 
 
 # ---------- low-level fetch ----------
+#
+# stats.wnba.com in particular is prone to slow/hanging responses under
+# repeated calls in a short window (this script makes dozens of calls per
+# run). A single TimeoutError on any one call kills the whole workflow, so
+# every fetch retries with backoff before giving up. A small delay between
+# calls also reduces the chance of being throttled in the first place.
+# This is a mitigation, not a guarantee - an undocumented API can still
+# fail outright.
+
+REQUEST_DELAY_SECONDS = 0.6
+MAX_RETRIES = 3
+RETRY_BACKOFF_SECONDS = 5
+
+def _fetch_with_retry(req, timeout=25):
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+            time.sleep(REQUEST_DELAY_SECONDS)
+            return data
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last_error = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    raise last_error
+
 
 def stats_get(endpoint, params=None):
     url = f"{STATS_BASE}/{endpoint}"
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers=STATS_HEADERS)
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
+    return _fetch_with_retry(req)
 
 
 def espn_get(path, params=None):
@@ -66,8 +94,7 @@ def espn_get(path, params=None):
     if params:
         url += "?" + urllib.parse.urlencode(params)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.loads(resp.read().decode())
+    return _fetch_with_retry(req)
 
 
 # ---------- team ID crosswalk (stats.wnba.com <-> ESPN) ----------
