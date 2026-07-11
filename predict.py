@@ -281,27 +281,51 @@ def get_team_starters(team_id, season=SEASON):
 # ---------- player prop floors ----------
 
 def get_player_recent_gamelog(athlete_id, season=SEASON, last_n=PROP_GAMES_SAMPLE):
+    """
+    Returns up to last_n most recent games as stat-name -> value dicts.
+
+    NOTE: earlier version matched category events to the top-level "events"
+    dict by raw eventId, but that lookup silently failed on every game
+    (likely an int-vs-string key mismatch between the two payload sections),
+    producing 0 games for every player with no error. This version
+    normalizes IDs to strings before matching, and also checks for stats
+    embedded directly on the category event as a fallback, in case the
+    separate top-level "events" section isn't populated for some athletes.
+    """
     try:
         payload = espn_web_get(f"/athletes/{athlete_id}/gamelog", {"season": season})
     except Exception:
         return []
-    events = payload.get("events", {})
+
+    events_section = payload.get("events", {})
+    # normalize to a str-keyed dict regardless of whether ESPN returns a
+    # dict-of-events or a list-of-events for this athlete
+    events_by_id = {}
+    if isinstance(events_section, dict):
+        events_by_id = {str(k): v for k, v in events_section.items()}
+    elif isinstance(events_section, list):
+        events_by_id = {str(e.get("id")): e for e in events_section if e.get("id")}
+
+    names = payload.get("names", [])  # stat column names, aligned to each event's "stats" list
     season_types = payload.get("seasonTypes", [])
-    game_ids_in_order = []
+
+    game_entries = []  # (date_or_order, stat_map)
     for st in season_types:
         for cat in st.get("categories", []):
             for evt in cat.get("events", []):
-                game_ids_in_order.append(evt.get("eventId"))
+                gid = str(evt.get("eventId") or evt.get("id") or "")
+                stat_values = evt.get("stats")
+                if not stat_values:
+                    # fall back to the separate top-level events section
+                    matched = events_by_id.get(gid)
+                    stat_values = matched.get("stats") if matched else None
+                if not stat_values:
+                    continue
+                stat_map = dict(zip(names, stat_values))
+                game_entries.append((evt.get("gameDate") or gid, stat_map))
 
-    games = []
-    names = payload.get("names", [])  # stat column names, aligned to each event's "stats" list
-    for gid in game_ids_in_order:
-        evt = events.get(gid) if isinstance(events, dict) else None
-        if not evt:
-            continue
-        stat_values = evt.get("stats", [])
-        stat_map = dict(zip(names, stat_values))
-        games.append(stat_map)
+    game_entries.sort(key=lambda x: str(x[0]))
+    games = [g[1] for g in game_entries]
     return games[-last_n:] if games else []
 
 
@@ -324,11 +348,30 @@ def prop_floor_probs(games, stat_key, thresholds):
     return probs
 
 
+_gamelog_debug_printed = False
+
 def get_player_props(team_id, season=SEASON):
+    global _gamelog_debug_printed
     starters = get_team_starters(team_id, season)
     results = []
     for p in starters:
         games = get_player_recent_gamelog(p["id"], season)
+        if len(games) == 0 and not _gamelog_debug_printed:
+            _gamelog_debug_printed = True
+            try:
+                raw = espn_web_get(f"/athletes/{p['id']}/gamelog", {"season": season})
+                print(f"DEBUG gamelog for {p['name']} (id={p['id']}) returned 0 games. "
+                      f"Top-level keys: {list(raw.keys())}")
+                if raw.get("seasonTypes"):
+                    st0 = raw["seasonTypes"][0]
+                    print(f"DEBUG seasonTypes[0] keys: {list(st0.keys())}")
+                    if st0.get("categories"):
+                        cat0 = st0["categories"][0]
+                        print(f"DEBUG categories[0] keys: {list(cat0.keys())}")
+                        if cat0.get("events"):
+                            print(f"DEBUG first event sample: {cat0['events'][0]}")
+            except Exception as debug_err:
+                print(f"DEBUG gamelog fetch itself failed: {debug_err}")
         floors = {}
         for stat_key, thresholds in PROP_THRESHOLDS.items():
             floors[stat_key] = prop_floor_probs(games, stat_key, thresholds)
