@@ -289,9 +289,20 @@ def get_todays_games():
 # the schedule endpoint, which is verified-working (same call already used
 # for rest-day calculation, so this doesn't add extra requests).
 
+_SCHEDULE_CACHE = {}  # team_id -> events list, cleared per run via clear_schedule_cache()
+
 def get_team_schedule_events(team_id, season=SEASON):
+    cache_key = (str(team_id), season)
+    if cache_key in _SCHEDULE_CACHE:
+        return _SCHEDULE_CACHE[cache_key]
     payload = espn_site_get(f"/teams/{team_id}/schedule", {"season": season})
-    return payload.get("events", [])
+    events = payload.get("events", [])
+    _SCHEDULE_CACHE[cache_key] = events
+    return events
+
+
+def clear_schedule_cache():
+    _SCHEDULE_CACHE.clear()
 
 
 def get_days_rest(team_id, before_date_str=TODAY, season=SEASON):
@@ -418,6 +429,77 @@ def build_recent_defense_note(recent_defense, season_stats, opponent_team_full=N
     }
 
 
+# ---------- team's own recent scoring (mirror of recent defense above) ----------
+#
+# Same rationale as get_team_recent_defense: is this team's own scoring
+# trending above/below their season average lately? Useful both for team
+# total-points bets and as context for player props (a team scoring more
+# as a whole tends to lift individual player floors too).
+
+def get_team_recent_offense(team_id, season=SEASON):
+    """
+    Points scored over this team's last RECENT_DEFENSE_GAMES_SAMPLE
+    completed games. Reuses get_team_schedule_events (cached per run), so
+    this adds no new network calls beyond what's already fetched.
+    """
+    events = get_team_schedule_events(team_id, season)
+    completed = []
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+        if not this_team:
+            continue
+        try:
+            pts_for = int(this_team.get("score", {}).get("value", this_team.get("score")))
+        except (TypeError, ValueError):
+            continue
+        completed.append({"date": e.get("date", ""), "pts_for": pts_for})
+
+    if not completed:
+        return None
+    completed.sort(key=lambda x: x["date"])
+    last_n = completed[-RECENT_DEFENSE_GAMES_SAMPLE:]
+    if not last_n:
+        return None
+
+    recent_avg = sum(g["pts_for"] for g in last_n) / len(last_n)
+    return {
+        "recent_pts_for_pg": round(recent_avg, 1),
+        "games_counted": len(last_n),
+    }
+
+
+def build_recent_offense_note(recent_offense, season_stats, team_full=None):
+    """
+    Combines a team's recent (last-5) points-scored with their season
+    average, same shape/rules as build_recent_defense_note. team_full here
+    is the team's OWN name (not an opponent's) - this note describes what
+    a team itself is doing, so it's attached to that team's own players.
+    """
+    if not recent_offense or not season_stats:
+        return None
+    if recent_offense["games_counted"] < 2:
+        return None
+
+    recent = recent_offense["recent_pts_for_pg"]
+    season_avg = season_stats["pts_pg"]
+    if season_avg == 0:
+        return None
+
+    pct_change = (recent - season_avg) / season_avg
+    return {
+        "team_full": team_full,
+        "recent_pts_for_pg": recent,
+        "season_pts_for_pg": season_avg,
+        "games_counted": recent_offense["games_counted"],
+        "pct_change": round(pct_change, 3),
+        "is_notable": abs(pct_change) >= RECENT_DEFENSE_NOTABLE_PCT,
+    }
+
+
 def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
     """
     Normal approximation of WNBA point-differential margin.
@@ -432,6 +514,234 @@ def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
     z = (spread + expected_margin) / std_dev
     prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
     return round(prob, 3)
+
+
+# ---------- league-wide rolling rankings (last 10 games) ----------
+#
+# Separate window from the last-5 "recent defense/offense vs season avg"
+# notes above - 10 games gives a steadier sample for ranking every team
+# against each other, whereas the 5-game notes are meant to catch a sharp
+# recent swing. Computed once per report run (not per-game) and cached,
+# since every team in the league needs to be ranked regardless of how many
+# games are on today's slate.
+
+LEAGUE_RANKING_GAMES_SAMPLE = 10
+_LEAGUE_RANKINGS_CACHE = None  # populated by get_league_rankings(), cleared per run
+
+def _team_last_n_pts(team_id, season=SEASON, n=LEAGUE_RANKING_GAMES_SAMPLE):
+    """Returns (pts_for_pg, pts_against_pg) over this team's last n completed
+    games, or (None, None) if there's no completed-game data yet."""
+    events = get_team_schedule_events(team_id, season)
+    completed = []
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not this_team or not opponent:
+            continue
+        try:
+            pts_for = int(this_team.get("score", {}).get("value", this_team.get("score")))
+            pts_against = int(opponent.get("score", {}).get("value", opponent.get("score")))
+        except (TypeError, ValueError):
+            continue
+        completed.append({"date": e.get("date", ""), "pts_for": pts_for, "pts_against": pts_against})
+
+    if not completed:
+        return None, None
+    completed.sort(key=lambda x: x["date"])
+    last_n = completed[-n:]
+    if not last_n:
+        return None, None
+    pts_for_pg = sum(g["pts_for"] for g in last_n) / len(last_n)
+    pts_against_pg = sum(g["pts_against"] for g in last_n) / len(last_n)
+    return round(pts_for_pg, 1), round(pts_against_pg, 1)
+
+
+def get_league_rankings(season=SEASON, force_refresh=False, team_ids=None):
+    """
+    Ranks teams by points-for and points-against over their last
+    LEAGUE_RANKING_GAMES_SAMPLE completed games. Returns a dict keyed by
+    team_id (str):
+      {"off_rank": int, "def_rank": int, "recent_pts_for_pg": float,
+       "recent_pts_against_pg": float, "teams_ranked": int}
+    off_rank 1 = highest scoring, def_rank 1 = fewest points allowed (best
+    defense). A team with too few completed games to compute is omitted
+    from the ranking (not assigned a fake rank).
+
+    team_ids: if given, only ranks these teams against each other (e.g.
+    just today's playing teams) instead of fetching the entire league -
+    this is what keeps the API call count down to roughly one schedule
+    fetch per playing team, rather than one per team in the league.
+    "teams_ranked" and every rank in the result reflect the size of this
+    scoped set, so a rank like "#1 of 4" means best of only today's teams,
+    not the full league. Defaults to the full league if not given.
+
+    Cached per run since it's identical for a given team_ids set regardless
+    of which specific game is being processed - call clear_schedule_cache()
+    (or start a fresh process) between runs on different days. The cache is
+    keyed by the exact team_ids requested, so calling with a different set
+    of teams within the same run will compute fresh rather than reusing a
+    stale scoped result.
+    """
+    global _LEAGUE_RANKINGS_CACHE
+    cache_key = tuple(sorted(str(t) for t in team_ids)) if team_ids else None
+    if _LEAGUE_RANKINGS_CACHE is not None and not force_refresh:
+        cached_key, cached_result = _LEAGUE_RANKINGS_CACHE
+        if cached_key == cache_key:
+            return cached_result
+
+    if team_ids:
+        teams = [{"id": t} for t in team_ids]
+    else:
+        teams = get_all_teams()
+
+    computed = []
+    for t in teams:
+        pts_for_pg, pts_against_pg = _team_last_n_pts(t["id"], season)
+        if pts_for_pg is None:
+            continue
+        computed.append({
+            "team_id": str(t["id"]),
+            "recent_pts_for_pg": pts_for_pg,
+            "recent_pts_against_pg": pts_against_pg,
+        })
+
+    if not computed:
+        _LEAGUE_RANKINGS_CACHE = (cache_key, {})
+        return {}
+
+    by_offense = sorted(computed, key=lambda x: x["recent_pts_for_pg"], reverse=True)
+    by_defense = sorted(computed, key=lambda x: x["recent_pts_against_pg"])  # fewest allowed = best = rank 1
+
+    off_rank_by_id = {row["team_id"]: i + 1 for i, row in enumerate(by_offense)}
+    def_rank_by_id = {row["team_id"]: i + 1 for i, row in enumerate(by_defense)}
+
+    result = {}
+    for row in computed:
+        tid = row["team_id"]
+        result[tid] = {
+            "off_rank": off_rank_by_id[tid],
+            "def_rank": def_rank_by_id[tid],
+            "recent_pts_for_pg": row["recent_pts_for_pg"],
+            "recent_pts_against_pg": row["recent_pts_against_pg"],
+            "teams_ranked": len(computed),
+        }
+    _LEAGUE_RANKINGS_CACHE = (cache_key, result)
+    return result
+
+
+def clear_league_rankings_cache():
+    global _LEAGUE_RANKINGS_CACHE
+    _LEAGUE_RANKINGS_CACHE = None
+
+
+# ---------- home/away splits ----------
+#
+# Some teams/players perform meaningfully differently at home vs on the
+# road. This reuses the same schedule-events data already fetched for rest
+# days/season stats (no new calls at the team level). Uses ALL completed
+# games this season for each split, not just a last-N window - home/away
+# splits need a decent sample size to mean anything, and a team is
+# typically only home or away for roughly half its games, so restricting
+# to "last 10" would often leave too few of one type to be meaningful.
+
+HOME_AWAY_MIN_GAMES = 2  # below this, don't claim a split means anything
+
+def get_team_home_away_split(team_id, season=SEASON):
+    """
+    Returns {"home": {...}, "away": {...}} with pts_for_pg/pts_against_pg/
+    games_counted for each split, using ALL of this team's completed games
+    this season. A split is omitted (not included in the dict) if it has
+    fewer than HOME_AWAY_MIN_GAMES games.
+    """
+    events = get_team_schedule_events(team_id, season)
+    splits = {"home": [], "away": []}
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not this_team or not opponent:
+            continue
+        home_away = this_team.get("homeAway")
+        if home_away not in ("home", "away"):
+            continue
+        try:
+            pts_for = int(this_team.get("score", {}).get("value", this_team.get("score")))
+            pts_against = int(opponent.get("score", {}).get("value", opponent.get("score")))
+        except (TypeError, ValueError):
+            continue
+        splits[home_away].append({"pts_for": pts_for, "pts_against": pts_against})
+
+    result = {}
+    for side in ("home", "away"):
+        games = splits[side]
+        if len(games) < HOME_AWAY_MIN_GAMES:
+            continue
+        result[side] = {
+            "pts_for_pg": round(sum(g["pts_for"] for g in games) / len(games), 1),
+            "pts_against_pg": round(sum(g["pts_against"] for g in games) / len(games), 1),
+            "games_counted": len(games),
+        }
+    return result if result else None
+
+
+def get_player_home_away_split(games, team_schedule_events, stat_key):
+    """
+    Splits a player's sampled games (from get_player_recent_gamelog) into
+    home/away buckets for a given stat, by matching each game's date
+    against the team's schedule events (which carry the homeAway flag) -
+    the player gamelog endpoint itself doesn't expose home/away directly,
+    so this joins the two data sources by date.
+
+    Returns {"home": {"avg": float, "games_counted": int},
+             "away": {...}} - a split is omitted if it has fewer than
+    HOME_AWAY_MIN_GAMES games or no games matched a schedule date at all.
+    """
+    # Build a date -> competitors lookup from the team's schedule. The
+    # actual home/away side for THIS team gets resolved per-game below
+    # (by matching against the opponent_team_id on the player's game
+    # entry), since a bare date key alone doesn't tell us which competitor
+    # is "this team" vs the opponent.
+    date_to_home_away = {}
+    for e in team_schedule_events:
+        comp = e.get("competitions", [{}])[0]
+        competitors = comp.get("competitors", [])
+        date_key = (e.get("date") or "")[:10]
+        if date_key:
+            date_to_home_away[date_key] = competitors
+
+    buckets = {"home": [], "away": []}
+    for g in games:
+        game_date = (g.get("date") or "")[:10]
+        if not game_date or game_date not in date_to_home_away:
+            continue
+        value = _extract_stat_value(g, stat_key)
+        if value is None:
+            continue
+        competitors = date_to_home_away[game_date]
+        # Determine this game's homeAway by finding which competitor is
+        # NOT the opponent listed on the player's game entry.
+        opp_id = g.get("opponent_team_id")
+        this_team_entry = next(
+            (c for c in competitors if str(c.get("team", {}).get("id")) != str(opp_id)), None
+        )
+        if not this_team_entry or this_team_entry.get("homeAway") not in ("home", "away"):
+            continue
+        buckets[this_team_entry["homeAway"]].append(value)
+
+    result = {}
+    for side in ("home", "away"):
+        vals = buckets[side]
+        if len(vals) < HOME_AWAY_MIN_GAMES:
+            continue
+        result[side] = {"avg": round(sum(vals) / len(vals), 1), "games_counted": len(vals)}
+    return result if result else None
 
 
 def apply_rest_adjustment(prob, team_a_rest, team_b_rest, points_per_rest_day=0.02):
@@ -685,6 +995,62 @@ def detect_minutes_change(games):
 
 
 
+RETURN_FROM_ABSENCE_MIN_MINUTES = 3  # a game with fewer than this many
+# minutes played is treated as "effectively did not play" for the purposes
+# of this heuristic (covers true DNPs plus token appearances).
+RETURN_FROM_ABSENCE_LOOKBACK_GAMES = 10  # how far back to scan for a gap
+RETURN_FROM_ABSENCE_FLAG_RECENT_GAMES = 2  # flag the most recent N games
+# back from an absence, not just the single game immediately after - a
+# player's conditioning/rhythm often takes more than one game to return.
+
+def detect_recent_return_from_absence(games):
+    """
+    HEURISTIC, NOT A CONFIRMED INJURY STATUS. Free data sources here don't
+    include an actual injury/DNP feed with reasons - this only looks at
+    whether a player logged near-zero minutes in a recent game and then
+    came back with real minutes, which could mean injury, illness, a
+    coach's decision (rest, rotation, benching), or a personal matter.
+    Always says "apparent absence" and "verify before relying on this",
+    never claims to know the cause.
+
+    Returns None if no such pattern is found in the last
+    RETURN_FROM_ABSENCE_LOOKBACK_GAMES games, or a dict describing the most
+    recent gap otherwise:
+      {"absence_game_date": str or None, "games_since_absence": int,
+       "games_sampled": int}
+    """
+    if len(games) < 2:
+        return None
+
+    recent = games[-RETURN_FROM_ABSENCE_LOOKBACK_GAMES:]
+    minutes_by_index = []
+    for g in recent:
+        v = _extract_stat_value(g, "minutes")
+        minutes_by_index.append(v)  # keep None as a placeholder to preserve ordering
+
+    if all(v is None for v in minutes_by_index):
+        return None
+
+    # Walk backward from the most recent game to find the closest prior gap
+    # (a near-zero-minutes game) that's since been followed by real minutes.
+    last_idx = len(recent) - 1
+    if minutes_by_index[last_idx] is None or minutes_by_index[last_idx] < RETURN_FROM_ABSENCE_MIN_MINUTES:
+        return None  # she's IN the apparent absence right now, not returning from one
+
+    for i in range(last_idx - 1, -1, -1):
+        v = minutes_by_index[i]
+        if v is not None and v < RETURN_FROM_ABSENCE_MIN_MINUTES:
+            games_since = last_idx - i
+            if games_since > RETURN_FROM_ABSENCE_FLAG_RECENT_GAMES:
+                return None  # gap is too far back to still be "recent"
+            return {
+                "absence_game_date": recent[i].get("date"),
+                "games_since_absence": games_since,
+                "games_sampled": len(recent),
+            }
+    return None
+
+
 def _extract_stat_value(game_entry, stat_key):
     """
     Looks up a stat's value in a single game entry's stats dict, trying
@@ -750,7 +1116,8 @@ _gamelog_debug_printed = False
 _names_debug_printed = False
 
 def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured_names=None,
-                      opponent_recent_defense_note=None):
+                      opponent_recent_defense_note=None, own_recent_offense_note=None,
+                      team_schedule_events=None):
     global _gamelog_debug_printed, _names_debug_printed
     starters = get_team_starters(team_id, season)
     team_injured_names = team_injured_names or set()
@@ -813,6 +1180,22 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
                 f"relying on the floors above, since a reduced role lowers them."
             )
 
+        return_from_absence = detect_recent_return_from_absence(games)
+        return_from_absence_note = None
+        if return_from_absence:
+            games_since = return_from_absence["games_since_absence"]
+            recency = "her most recent game" if games_since == 1 else f"{games_since} games ago"
+            return_from_absence_note = (
+                f"Apparent absence detected: logged well below normal minutes in a recent game, "
+                f"then returned with real minutes as of {recency}. Cause is unconfirmed (could be "
+                f"injury, illness, rest, or a coaching decision) - verify her status before relying "
+                f"on the floors above, since a still-limited role would lower them."
+            )
+
+        home_away_split = None
+        if team_schedule_events:
+            home_away_split = get_player_home_away_split(games, team_schedule_events, "points")
+
         results.append({
             "name": p["name"],
             "games_sampled": len(games),
@@ -820,6 +1203,9 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
             "vs_opponent": vs_opponent,
             "minutes_note": minutes_note,
             "opponent_recent_defense": opponent_recent_defense_note,
+            "own_recent_offense": own_recent_offense_note,
+            "return_from_absence_note": return_from_absence_note,
+            "home_away_points_split": home_away_split,
         })
     return results
 
@@ -876,8 +1262,24 @@ def flag_missing_starters(team_id, season=SEASON):
 # ---------- main ----------
 
 def build_report():
+    # Clear per-run caches so a fresh workflow run doesn't reuse stale data
+    # from a previous invocation of the same long-lived process (harmless
+    # no-op for a fresh process, but keeps behavior correct either way).
+    clear_schedule_cache()
+    clear_league_rankings_cache()
+
     games = get_todays_games()
     report = []
+
+    # Rank only today's playing teams against each other, not the whole
+    # league - this keeps the extra schedule fetches to ~1 per playing team
+    # instead of ~1 per team in the league. Means a rank like "#1 of 4"
+    # reflects today's slate only, not the full league standings.
+    todays_team_ids = set()
+    for g in games:
+        todays_team_ids.add(g["home_team_id"])
+        todays_team_ids.add(g["away_team_id"])
+    league_rankings = get_league_rankings(team_ids=todays_team_ids) if todays_team_ids else {}
 
     for g in games:
         home_id, away_id = g["home_team_id"], g["away_team_id"]
@@ -893,15 +1295,29 @@ def build_report():
         home_recent_defense = build_recent_defense_note(get_team_recent_defense(home_id), home_stats, g["home_team_name"])
         away_recent_defense = build_recent_defense_note(get_team_recent_defense(away_id), away_stats, g["away_team_name"])
 
+        # Same pattern as recent defense above, but for a team's OWN
+        # scoring - attached to that team's OWN players (not the opponent's),
+        # since it's context on how the player's own offense is trending.
+        home_recent_offense = build_recent_offense_note(get_team_recent_offense(home_id), home_stats, g["home_team_name"])
+        away_recent_offense = build_recent_offense_note(get_team_recent_offense(away_id), away_stats, g["away_team_name"])
+
         home_flags, home_injured_names = flag_missing_starters(home_id)
         away_flags, away_injured_names = flag_missing_starters(away_id)
 
+        home_schedule_events = get_team_schedule_events(home_id)
+        away_schedule_events = get_team_schedule_events(away_id)
+
         # Each side's players face the OPPONENT's defense, so the note
-        # attached to a player is the opponent's recent-defense numbers.
+        # attached to a player is the opponent's recent-defense numbers -
+        # but their OWN team's recent offense note.
         home_props = get_player_props(home_id, opponent_team_id=away_id, team_injured_names=home_injured_names,
-                                       opponent_recent_defense_note=away_recent_defense)
+                                       opponent_recent_defense_note=away_recent_defense,
+                                       own_recent_offense_note=home_recent_offense,
+                                       team_schedule_events=home_schedule_events)
         away_props = get_player_props(away_id, opponent_team_id=home_id, team_injured_names=away_injured_names,
-                                       opponent_recent_defense_note=home_recent_defense)
+                                       opponent_recent_defense_note=home_recent_defense,
+                                       own_recent_offense_note=away_recent_offense,
+                                       team_schedule_events=away_schedule_events)
 
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
@@ -913,6 +1329,10 @@ def build_report():
             "away_rest_days": away_rest,
             "home_flags": home_flags,
             "away_flags": away_flags,
+            "home_league_rank": league_rankings.get(str(home_id)),
+            "away_league_rank": league_rankings.get(str(away_id)),
+            "home_team_split": get_team_home_away_split(home_id),
+            "away_team_split": get_team_home_away_split(away_id),
             "spread_lines": [],
             "home_players": home_props,
             "away_players": away_props,
@@ -1013,6 +1433,18 @@ def render_html(report):
         block.append(f'<h2>{g["away_team_full"]} <span class="at-sign">@</span> {g["home_team_full"]}</h2>')
         rest_txt = f'{g["away_team"]} rest {g["away_rest_days"]}d &middot; {g["home_team"]} rest {g["home_rest_days"]}d'
         block.append(f'<p class="rest-line">{rest_txt}</p>')
+
+        away_rank = g.get("away_league_rank")
+        home_rank = g.get("home_league_rank")
+        if away_rank or home_rank:
+            rank_parts = []
+            if away_rank:
+                rank_parts.append(f'{g["away_team"]} off #{away_rank["off_rank"]}/def #{away_rank["def_rank"]} '
+                                   f'of {away_rank["teams_ranked"]} playing today (last 10)')
+            if home_rank:
+                rank_parts.append(f'{g["home_team"]} off #{home_rank["off_rank"]}/def #{home_rank["def_rank"]} '
+                                   f'of {home_rank["teams_ranked"]} playing today (last 10)')
+            block.append(f'<p class="rest-line">{" &middot; ".join(rank_parts)}</p>')
         block.append('</div>')
 
         flags = g["away_flags"] + g["home_flags"]
@@ -1021,6 +1453,23 @@ def render_html(report):
             for flag in flags:
                 block.append(f'<div class="flag-chip">&#9888; {flag}</div>')
             block.append('</div>')
+
+        away_split = g.get("away_team_split")
+        home_split = g.get("home_team_split")
+        if away_split or home_split:
+            split_lines = []
+            for label, split in ((g["away_team"], away_split), (g["home_team"], home_split)):
+                if not split:
+                    continue
+                pieces = []
+                for side_key in ("home", "away"):
+                    s = split.get(side_key)
+                    if s:
+                        pieces.append(f'{side_key} {s["pts_for_pg"]:.1f}/{s["pts_against_pg"]:.1f} pts for/against ({s["games_counted"]}g)')
+                if pieces:
+                    split_lines.append(f'{label}: {" &middot; ".join(pieces)}')
+            if split_lines:
+                block.append(f'<p class="rest-line">{" &middot; ".join(split_lines)}</p>')
 
         block.append('<h3 class="section-label">Spread Cover</h3>')
         block.append('<div class="spread-block">')
@@ -1090,6 +1539,32 @@ def render_html(report):
                                      f'&lt;{VS_OPPONENT_MAX_AGE_DAYS}d): {" &middot; ".join(lines)}</p>')
                     else:
                         block.append(f'<p class="vs-opp-line vs-opp-empty">vs opponent: {vs_opp["reason"]}</p>')
+
+                own_off = p.get("own_recent_offense")
+                if own_off:
+                    sign = "+" if own_off["pct_change"] >= 0 else ""
+                    pct_txt = f"{sign}{own_off['pct_change'] * 100:.0f}%"
+                    team_name = own_off.get("team_full") or side_full
+                    off_txt = (f"{team_name} scored {own_off['recent_pts_for_pg']:.1f} points per game "
+                               f"on average over their last {own_off['games_counted']} games "
+                               f"(season avg {own_off['season_pts_for_pg']:.1f}, {pct_txt})")
+                    if own_off["is_notable"]:
+                        block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {off_txt}</div>')
+                    else:
+                        block.append(f'<p class="vs-opp-line">{off_txt}</p>')
+
+                home_away_split = p.get("home_away_points_split")
+                if home_away_split:
+                    split_parts = []
+                    for side_key in ("home", "away"):
+                        s = home_away_split.get(side_key)
+                        if s:
+                            split_parts.append(f'{side_key}: {s["avg"]:.1f} pts/g ({s["games_counted"]}g)')
+                    if split_parts:
+                        block.append(f'<p class="vs-opp-line">Points, home/away split: {" &middot; ".join(split_parts)}</p>')
+
+                if p.get("return_from_absence_note"):
+                    block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["return_from_absence_note"]}</div>')
 
                 if p.get("minutes_note"):
                     block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["minutes_note"]}</div>')
