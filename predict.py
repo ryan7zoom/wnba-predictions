@@ -1436,32 +1436,33 @@ def render_html(report):
 
         away_rank = g.get("away_league_rank")
         home_rank = g.get("home_league_rank")
-        if away_rank or home_rank:
-            rank_parts = []
-            if away_rank:
-                rank_parts.append(f'{g["away_team"]} off #{away_rank["off_rank"]}/def #{away_rank["def_rank"]} '
-                                   f'of {away_rank["teams_ranked"]} playing today (last 10)')
-            if home_rank:
-                rank_parts.append(f'{g["home_team"]} off #{home_rank["off_rank"]}/def #{home_rank["def_rank"]} '
-                                   f'of {home_rank["teams_ranked"]} playing today (last 10)')
-            block.append(f'<p class="rest-line">{" &middot; ".join(rank_parts)}</p>')
-
         away_split = g.get("away_team_split")
         home_split = g.get("home_team_split")
-        if away_split or home_split:
-            split_lines = []
-            for label, split in ((g["away_team"], away_split), (g["home_team"], home_split)):
-                if not split:
-                    continue
-                pieces = []
-                for side_key in ("home", "away"):
+
+        team_bullets = []
+        for team_abbr, team_full, rank, split in (
+            (g["away_team"], g["away_team_full"], away_rank, away_split),
+            (g["home_team"], g["home_team_full"], home_rank, home_split),
+        ):
+            lines = []
+            if rank:
+                lines.append(f'{team_full} was #{rank["off_rank"]} in offense and #{rank["def_rank"]} in '
+                              f'defense among today\'s {rank["teams_ranked"]} teams, over the last 10 games.')
+            if split:
+                for side_key, side_label in (("home", "at home"), ("away", "on the road")):
                     s = split.get(side_key)
                     if s:
-                        pieces.append(f'{side_key} {s["pts_for_pg"]:.1f}/{s["pts_against_pg"]:.1f} pts for/against ({s["games_counted"]}g)')
-                if pieces:
-                    split_lines.append(f'{label}: {" &middot; ".join(pieces)}')
-            if split_lines:
-                block.append(f'<p class="rest-line">{" &middot; ".join(split_lines)}</p>')
+                        lines.append(f'{team_full} scored {s["pts_for_pg"]:.1f} and allowed {s["pts_against_pg"]:.1f} '
+                                      f'points per game {side_label} this season ({s["games_counted"]} games).')
+            if lines:
+                team_bullets.append((team_abbr, lines))
+
+        if team_bullets:
+            block.append('<ul class="matchup-facts">')
+            for _abbr, lines in team_bullets:
+                for line in lines:
+                    block.append(f'<li>{line}</li>')
+            block.append('</ul>')
         block.append('</div>')
 
         flags = g["away_flags"] + g["home_flags"]
@@ -1696,6 +1697,9 @@ h1 {{
 }}
 .at-sign {{ color: var(--text-dim); font-weight: 400; }}
 .rest-line {{ color: var(--text-dim); font-size: 0.82em; margin: 8px 0 0; }}
+.matchup-facts {{ list-style: none; margin: 10px 0 0; padding: 0; }}
+.matchup-facts li {{ color: var(--text-dim); font-size: 0.82em; line-height: 1.5; margin: 6px 0 0; padding-left: 14px; position: relative; }}
+.matchup-facts li::before {{ content: "\\2022"; position: absolute; left: 0; color: var(--teal); }}
 
 .flag-stack {{ padding: 0 20px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }}
 .flag-chip {{
