@@ -1117,7 +1117,7 @@ _names_debug_printed = False
 
 def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured_names=None,
                       opponent_recent_defense_note=None, own_recent_offense_note=None,
-                      team_schedule_events=None):
+                      team_schedule_events=None, opponent_league_rank=None):
     global _gamelog_debug_printed, _names_debug_printed
     starters = get_team_starters(team_id, season)
     team_injured_names = team_injured_names or set()
@@ -1204,6 +1204,7 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
             "minutes_note": minutes_note,
             "opponent_recent_defense": opponent_recent_defense_note,
             "own_recent_offense": own_recent_offense_note,
+            "opponent_league_rank": opponent_league_rank,
             "return_from_absence_note": return_from_absence_note,
             "home_away_points_split": home_away_split,
         })
@@ -1271,15 +1272,13 @@ def build_report():
     games = get_todays_games()
     report = []
 
-    # Rank only today's playing teams against each other, not the whole
-    # league - this keeps the extra schedule fetches to ~1 per playing team
-    # instead of ~1 per team in the league. Means a rank like "#1 of 4"
-    # reflects today's slate only, not the full league standings.
-    todays_team_ids = set()
-    for g in games:
-        todays_team_ids.add(g["home_team_id"])
-        todays_team_ids.add(g["away_team_id"])
-    league_rankings = get_league_rankings(team_ids=todays_team_ids) if todays_team_ids else {}
+    # Rank every team in the league against each other (not just today's
+    # playing teams) so "#2 in offense" means #2 in the whole league, the
+    # way that phrase normally reads - not #2 out of just today's 4 teams.
+    # Costs more API calls (one schedule fetch per team in the league) than
+    # scoping to today's slate would, but avoids a confusing/misleading
+    # ranking number.
+    league_rankings = get_league_rankings()
 
     for g in games:
         home_id, away_id = g["home_team_id"], g["away_team_id"]
@@ -1308,16 +1307,20 @@ def build_report():
         away_schedule_events = get_team_schedule_events(away_id)
 
         # Each side's players face the OPPONENT's defense, so the note
-        # attached to a player is the opponent's recent-defense numbers -
-        # but their OWN team's recent offense note.
+        # attached to a player is the opponent's recent-defense numbers,
+        # their OWN team's recent offense note, and the opponent's
+        # league-wide defensive rank (how good the opponent is at
+        # defending, in league-wide context - not just this one matchup).
         home_props = get_player_props(home_id, opponent_team_id=away_id, team_injured_names=home_injured_names,
                                        opponent_recent_defense_note=away_recent_defense,
                                        own_recent_offense_note=home_recent_offense,
-                                       team_schedule_events=home_schedule_events)
+                                       team_schedule_events=home_schedule_events,
+                                       opponent_league_rank=league_rankings.get(str(away_id)))
         away_props = get_player_props(away_id, opponent_team_id=home_id, team_injured_names=away_injured_names,
                                        opponent_recent_defense_note=home_recent_defense,
                                        own_recent_offense_note=away_recent_offense,
-                                       team_schedule_events=away_schedule_events)
+                                       team_schedule_events=away_schedule_events,
+                                       opponent_league_rank=league_rankings.get(str(home_id)))
 
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
@@ -1447,7 +1450,7 @@ def render_html(report):
             lines = []
             if rank:
                 lines.append(f'{team_full} was #{rank["off_rank"]} in offense and #{rank["def_rank"]} in '
-                              f'defense among today\'s {rank["teams_ranked"]} teams, over the last 10 games.')
+                              f'defense out of {rank["teams_ranked"]} teams in the league, over the last 10 games.')
             if split:
                 for side_key, side_label in (("home", "at home"), ("away", "on the road")):
                     s = split.get(side_key)
@@ -1520,6 +1523,13 @@ def render_html(report):
                         block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {def_txt}</div>')
                     else:
                         block.append(f'<p class="vs-opp-line">{def_txt}</p>')
+
+                opp_rank = p.get("opponent_league_rank")
+                if opp_rank:
+                    opp_name = (recent_def or {}).get("opponent_team_full") or "Opponent"
+                    rank_txt = (f"{opp_name} ranks #{opp_rank['def_rank']} in defense out of "
+                                f"{opp_rank['teams_ranked']} teams in the league, over the last 10 games.")
+                    block.append(f'<p class="vs-opp-line">{rank_txt}</p>')
 
                 vs_opp = p.get("vs_opponent")
                 if vs_opp:
@@ -1861,7 +1871,7 @@ h1 {{
 <h1>WNBA Daily Probabilities</h1>
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
-<p class="disclaimer">Estimates only, not guarantees. Injury flags are informational (ESPN data, pregame-confirmation speed) - always verify starters yourself before betting. Spread model uses season point differential with a rough rest-day adjustment; treat all outputs as directional.</p>
+<p class="disclaimer">Estimates only, not guarantees. Injury flags are informational (pregame-confirmation speed) - always verify starters yourself before betting. Spread model uses season point differential with a rough rest-day adjustment; treat all outputs as directional.</p>
 {_render_top_performers(top_performers)}
 {''.join(cards)}
 </body>
