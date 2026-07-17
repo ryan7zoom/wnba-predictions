@@ -1445,14 +1445,6 @@ def render_html(report):
                 rank_parts.append(f'{g["home_team"]} off #{home_rank["off_rank"]}/def #{home_rank["def_rank"]} '
                                    f'of {home_rank["teams_ranked"]} playing today (last 10)')
             block.append(f'<p class="rest-line">{" &middot; ".join(rank_parts)}</p>')
-        block.append('</div>')
-
-        flags = g["away_flags"] + g["home_flags"]
-        if flags:
-            block.append('<div class="flag-stack">')
-            for flag in flags:
-                block.append(f'<div class="flag-chip">&#9888; {flag}</div>')
-            block.append('</div>')
 
         away_split = g.get("away_team_split")
         home_split = g.get("home_team_split")
@@ -1470,6 +1462,14 @@ def render_html(report):
                     split_lines.append(f'{label}: {" &middot; ".join(pieces)}')
             if split_lines:
                 block.append(f'<p class="rest-line">{" &middot; ".join(split_lines)}</p>')
+        block.append('</div>')
+
+        flags = g["away_flags"] + g["home_flags"]
+        if flags:
+            block.append('<div class="flag-stack">')
+            for flag in flags:
+                block.append(f'<div class="flag-chip">&#9888; {flag}</div>')
+            block.append('</div>')
 
         block.append('<h3 class="section-label">Spread Cover</h3>')
         block.append('<div class="spread-block">')
