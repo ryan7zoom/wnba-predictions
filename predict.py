@@ -63,6 +63,9 @@ MEDIUM_THRESHOLD_INDEX = 1
 TOP_PERFORMERS_COUNT = 10
 TOP_PERFORMERS_MIN_GAMES = 5  # don't rank anyone with too small a sample
 
+CONFIDENCE_THRESHOLD = 0.80  # only picks at/above this become eligible for bet builders
+TOP_PICKS_LIMIT = 8
+
 
 POINTS_STAT_KEY = "points"
 TREND_ONLY_STAT_KEYS = ("rebounds", "assists", "threes")
@@ -1566,7 +1569,162 @@ def _render_top_trend_performers(top_trends):
     </section>"""
 
 
+def _lowest_safe_threshold(prob_dict, min_confidence=CONFIDENCE_THRESHOLD):
+    """
+    Given a {{threshold: prob}} dict, returns the LOWEST threshold whose
+    prob still clears min_confidence (not the highest raw percentage on
+    the board) - mirrors the MLB version's floor-style pick logic.
+    """
+    if not prob_dict:
+        return None
+    eligible = [(t, p) for t, p in prob_dict.items() if p is not None and p >= min_confidence]
+    if not eligible:
+        return None
+    t, p = min(eligible, key=lambda x: x[0])
+    return {"threshold": t, "prob": p}
+
+
+def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PICKS_LIMIT):
+    """
+    WNBA version of the MLB bet-builder extractor. Scans every game for
+    the day and pulls every pick (player prop floor, team spread cover)
+    that clears min_confidence, using the lowest threshold that still
+    clears the bar for floor-style props. No moneyline here - the WNBA
+    report only models spread cover, not a separate straight-up win
+    probability - and no pitcher strikeouts, since this is basketball.
+
+    Picks are grouped by game, and a game is only included if it has at
+    least 2 qualifying picks, since the point of this section is bet
+    builders (same-game parlays), which need 2+ legs from the same game
+    to combine.
+
+    This reflects the model's own math only - it has not been backtested
+    against real settled results, so "safe" here means "the model is very
+    consistent about this," not "guaranteed to hit."
+
+    Returns a list of game-groups: [{"matchup": ..., "picks": [...]}, ...],
+    sorted by each game's best single pick probability, highest first, and
+    capped at `limit` games (not `limit` picks).
+    """
+    games = []
+
+    for g in report:
+        matchup = f'{g["away_team"]} @ {g["home_team"]}'
+        game_picks = []
+
+        # --- player prop floors (points, rebounds, assists, threes) ---
+        for side_label, players in (
+            (g["away_team"], g["away_players"]),
+            (g["home_team"], g["home_players"]),
+        ):
+            for p in players:
+                for stat_key, floors in p["floors"].items():
+                    best = _lowest_safe_threshold(floors, min_confidence)
+                    if best:
+                        stat_label = STAT_DISPLAY_NAMES.get(stat_key, stat_key)
+                        reasons = [f"hit this mark in {round(best['prob']*100)}% of her last {p['games_sampled']} games"]
+                        vs_opp = p.get("vs_opponent")
+                        if vs_opp and vs_opp.get("games"):
+                            most_recent_vs_opp = vs_opp["games"][-1]
+                            v = _extract_stat_value(most_recent_vs_opp, stat_key)
+                            if v is not None and v >= best["threshold"]:
+                                reasons.append(f"also hit {best['threshold']}+ {stat_label} in her last meeting vs this opponent")
+                        game_picks.append({
+                            "type": stat_label,
+                            "player": p["name"],
+                            "team_context": matchup,
+                            "pick_label": f'{best["threshold"]}+ {stat_label}',
+                            "prob": best["prob"],
+                            "reasons": reasons,
+                        })
+
+        # --- team spread covers (best line per team, not every threshold) ---
+        best_spread_per_team = {}
+        for s in g.get("spread_lines", []):
+            for side_label, prob in ((g["away_team"], s.get("away_cover_prob")),
+                                      (g["home_team"], s.get("home_cover_prob"))):
+                if prob is not None and prob >= min_confidence:
+                    key = side_label
+                    candidate = {
+                        "type": "Spread",
+                        "player": side_label,
+                        "team_context": matchup,
+                        "pick_label": f'{s["spread"]:+} spread',
+                        "prob": prob,
+                        "reasons": [f"model favors {side_label} to cover {s['spread']:+} today"],
+                    }
+                    if key not in best_spread_per_team or prob > best_spread_per_team[key]["prob"]:
+                        best_spread_per_team[key] = candidate
+        game_picks.extend(best_spread_per_team.values())
+
+        # Bet builder requirement: need 2+ picks from this game, or it's not
+        # useful for combining legs - drop games with only 0 or 1 qualifying pick.
+        if len(game_picks) >= 2:
+            game_picks.sort(key=lambda x: x["prob"], reverse=True)
+            games.append({
+                "matchup": matchup,
+                "best_prob": game_picks[0]["prob"],
+                "picks": game_picks,
+            })
+
+    games.sort(key=lambda x: x["best_prob"], reverse=True)
+    return games[:limit]
+
+
+def _render_top_picks(games):
+    """
+    Renders the Top Picks section as bet-builder groups: one block per
+    game, each containing 2+ qualifying picks (spread cover and/or player
+    prop floors) that can be combined into a same-game parlay / bet
+    builder. Games sorted by their best single pick's probability,
+    highest first. Empty state shown honestly if no game had 2+
+    qualifying picks today.
+    """
+    if not games:
+        return """
+    <section class="top-picks">
+      <h2 class="top-picks-title">today's bet builders</h2>
+      <p class="top-picks-sub">No game had at least two picks clear our confidence bar today - that happens on days with tougher matchups. Check the full game breakdowns below instead.</p>
+    </section>"""
+
+    game_blocks = []
+    for game in games:
+        rows = []
+        for pk in game["picks"]:
+            pct = pk["prob"] * 100
+            reasons_html = ""
+            if pk.get("reasons"):
+                reasons_html = '<ul class="pick-reasons">' + "".join(f"<li>{r}</li>" for r in pk["reasons"]) + "</ul>"
+            rows.append(f"""
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">{pk["type"]}</span>
+              <span class="pick-prob">{pct:.0f}%</span>
+            </div>
+            <p class="pick-player">{pk["player"]}</p>
+            <p class="pick-line">{pk["pick_label"]}</p>
+            {reasons_html}
+          </div>""")
+
+        game_blocks.append(f"""
+      <div class="bed-builder-group">
+        <h3 class="bed-builder-label">bet builder: {game["matchup"]}</h3>
+        <div class="pick-grid">
+          {''.join(rows)}
+        </div>
+      </div>""")
+
+    return f"""
+    <section class="top-picks">
+      <h2 class="top-picks-title">today's bet builders</h2>
+      <p class="top-picks-sub">Each group below has 2+ picks from the same game - spread cover and player props - so you can combine legs into a bet builder / same-game parlay. This reflects the model's own math, not a guarantee - always double-check before betting.</p>
+      {''.join(game_blocks)}
+    </section>"""
+
+
 def render_html(report):
+    top_picks = extract_top_picks(report)
+    top_picks_html = _render_top_picks(top_picks)
     top_points = build_top_points_performers(report)
     top_trends = build_top_trend_performers(report)
     cards = []
@@ -1740,25 +1898,25 @@ def render_html(report):
   --orange: #E8630A;
   --teal: #2DD4BF;
   --amber: #F5A623;
-  --text: #F1F3F5;
-  --text-dim: #8B96AC;
+  --text: #F7F8FA;
+  --text-dim: #AEB8CC;
   --h1-accent: #ffb35c;
-  --disclaimer-text: #C97B7B;
+  --disclaimer-text: #E39A9A;
   --disclaimer-bg: rgba(232, 99, 10, 0.08);
   --disclaimer-border: rgba(232, 99, 10, 0.2);
-  --flag-bg: rgba(245, 166, 35, 0.1);
-  --flag-border: rgba(245, 166, 35, 0.3);
+  --flag-bg: rgba(245, 166, 35, 0.12);
+  --flag-border: rgba(245, 166, 35, 0.35);
   --row-tint: rgba(255,255,255,0.02);
-  --track-bg: rgba(255,255,255,0.06);
+  --track-bg: rgba(255,255,255,0.08);
   --pill-hot-bg: rgba(45, 212, 191, 0.16);
   --pill-hot-text: #5eead4;
   --pill-hot-border: rgba(45, 212, 191, 0.4);
   --pill-warm-bg: rgba(232, 99, 10, 0.16);
   --pill-warm-text: #ffab6b;
   --pill-warm-border: rgba(232, 99, 10, 0.4);
-  --pill-cool-bg: rgba(255,255,255,0.03);
-  --pill-cool-text: #5b6579;
-  --pill-cool-border: rgba(255,255,255,0.06);
+  --pill-cool-bg: rgba(255,255,255,0.04);
+  --pill-cool-text: #9AA5BC;
+  --pill-cool-border: rgba(255,255,255,0.10);
 }}
 @media (prefers-color-scheme: light) {{
   :root {{
@@ -2010,6 +2168,53 @@ h1 {{
 .tp-reasons {{ list-style: none; margin: 10px 0 0; padding: 0; }}
 .tp-reasons li {{ color: var(--text-dim); font-size: 0.78em; line-height: 1.5; margin: 4px 0 0; padding-left: 14px; position: relative; }}
 .tp-reasons li::before {{ content: "\\2022"; position: absolute; left: 0; color: var(--teal); }}
+
+.top-picks {{
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 20px 18px;
+  margin-bottom: 22px;
+}}
+.top-picks-title {{ font-size: 1.1em; font-weight: 800; margin: 0 0 4px; color: var(--text); }}
+.top-picks-sub {{ font-size: 0.78em; color: var(--text-dim); line-height: 1.5; margin: 0 0 14px; }}
+.pick-grid {{ display: flex; flex-direction: column; gap: 10px; }}
+.bed-builder-group {{ margin-bottom: 20px; }}
+.bed-builder-group:last-child {{ margin-bottom: 0; }}
+.bed-builder-label {{
+  font-size: 0.85em;
+  font-weight: 700;
+  text-transform: lowercase;
+  color: var(--teal);
+  margin: 0 0 10px;
+}}
+.pick-card {{
+  background: var(--track-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}}
+.pick-card-top {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }}
+.pick-type {{
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}}
+.pick-prob {{ font-size: 1.1em; font-weight: 800; color: var(--teal); }}
+.pick-player {{ font-size: 0.98em; font-weight: 700; color: var(--text); margin: 0 0 2px; }}
+.pick-line {{ font-size: 0.88em; font-weight: 600; color: var(--orange); margin: 0 0 2px; }}
+.pick-context {{ font-size: 0.75em; color: var(--text-dim); margin: 0; }}
+.pick-reasons {{
+  margin: 8px 0 0;
+  padding: 0 0 0 16px;
+  list-style: disc;
+  font-size: 0.75em;
+  color: var(--text-dim);
+  line-height: 1.5;
+}}
+.pick-reasons li {{ margin: 2px 0; }}
 </style>
 </head>
 <body>
@@ -2017,6 +2222,7 @@ h1 {{
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
 <p class="disclaimer">Estimates only, not guarantees. Injury flags are informational (pregame-confirmation speed) - always verify starters yourself before betting. Spread model uses season point differential with a rough rest-day adjustment; treat all outputs as directional.</p>
+{top_picks_html}
 {_render_top_points_performers(top_points)}
 {_render_top_trend_performers(top_trends)}
 {''.join(cards)}
