@@ -64,18 +64,128 @@ TOP_PERFORMERS_COUNT = 10
 TOP_PERFORMERS_MIN_GAMES = 5  # don't rank anyone with too small a sample
 
 
-def build_top_performers(report):
-    """
-    Scans every starter across every game in today's report and ranks them
-    by hit-rate on their "medium difficulty" threshold (see
-    MEDIUM_THRESHOLD_INDEX) for each stat, picking each player's single
-    best qualifying stat line. Returns the top TOP_PERFORMERS_COUNT across
-    the whole day, not per game - this is the "don't make me sort through
-    80-100 players" list.
+POINTS_STAT_KEY = "points"
+TREND_ONLY_STAT_KEYS = ("rebounds", "assists", "threes")
 
-    A player can appear once (their best line), not once per stat, so a
-    player who's great at both points and rebounds doesn't crowd out
-    everyone else with two entries.
+# Weighting for the points ranking score below. Own hit-rate is the
+# foundation (a player has to actually be hitting the line); head-to-head
+# and opponent-defense are real but secondary signals layered on top, not
+# separate rankings of their own - a player with a great hit-rate but a
+# tough opponent should still generally outrank a mediocre hit-rate against
+# a weak opponent, so these are additive nudges (fractions of the hit-rate
+# scale), not multipliers that could flip the order entirely.
+POINTS_H2H_BONUS = 0.05          # hit the line in her most recent head-to-head
+POINTS_OPP_ALLOWING_BONUS = 0.05  # opponent's recent points-allowed trend is up (easier matchup)
+POINTS_OPP_WEAK_DEFENSE_BONUS = 0.05  # opponent ranks in the bottom half of the league defensively
+
+def _points_score_for_player(p, side_label, side_full, opponent_full, g):
+    """
+    Builds the 4-factor points candidate for a single player, or None if
+    she doesn't have a qualifying points floor. The 4 factors:
+      1. Her own hit-rate on the medium points threshold (the base score)
+      2. Whether she hit that same line in her most recent head-to-head
+      3. Whether the opponent has recently been allowing more points than
+         their season average (a trending-easier matchup)
+      4. Whether the opponent ranks in the bottom half of the league on
+         defense over the last 10 games (a weak-defense matchup, not just
+         a recent blip)
+    Only points gets this treatment - rebounds/assists/threes don't have
+    opponent-allowed data behind them (see TREND_ONLY_STAT_KEYS below).
+    """
+    thresholds = PROP_THRESHOLDS[POINTS_STAT_KEY]
+    floors = p["floors"].get(POINTS_STAT_KEY, {})
+    if not floors:
+        return None
+    idx = min(MEDIUM_THRESHOLD_INDEX, len(thresholds) - 1)
+    medium_t = thresholds[idx]
+    hit_rate = floors.get(medium_t)
+    if hit_rate is None:
+        return None
+
+    score = hit_rate
+    reasons = []
+
+    # Factor 2: head-to-head
+    h2h_hit = False
+    vs_opp = p.get("vs_opponent")
+    if vs_opp and vs_opp.get("games"):
+        most_recent_vs_opp = vs_opp["games"][-1]
+        v = _extract_stat_value(most_recent_vs_opp, POINTS_STAT_KEY)
+        if v is not None and v >= medium_t:
+            h2h_hit = True
+            score += POINTS_H2H_BONUS
+            n_h2h = len(vs_opp["games"])
+            reasons.append(f"hit {medium_t}+ points in her last {'meeting' if n_h2h == 1 else f'{n_h2h} meetings'} vs {opponent_full}")
+
+    # Factor 3: opponent recently allowing more points than their own season average
+    opp_allowing_more = False
+    recent_def = p.get("opponent_recent_defense")
+    if recent_def and recent_def["pct_change"] > 0:
+        opp_allowing_more = True
+        score += POINTS_OPP_ALLOWING_BONUS
+        reasons.append(f"{opponent_full} has allowed {recent_def['pct_change'] * 100:.0f}% more points than "
+                        f"their season average over their last {recent_def['games_counted']} games")
+
+    # Factor 4: opponent's league-wide defensive rank, bottom half = weak D
+    opp_weak_defense = False
+    opp_rank = p.get("opponent_league_rank")
+    if opp_rank and opp_rank["teams_ranked"] >= 2:
+        if opp_rank["def_rank"] > (opp_rank["teams_ranked"] + 1) / 2:
+            opp_weak_defense = True
+            score += POINTS_OPP_WEAK_DEFENSE_BONUS
+            reasons.append(f"{opponent_full} ranks #{opp_rank['def_rank']} of {opp_rank['teams_ranked']} in defense "
+                            f"over the last 10 games")
+
+    return {
+        "name": p["name"],
+        "team": side_label,
+        "matchup": f"{side_label} vs {g['home_team'] if side_label == g['away_team'] else g['away_team']}",
+        "opponent_full": opponent_full,
+        "stat_key": POINTS_STAT_KEY,
+        "threshold": medium_t,
+        "hit_rate": hit_rate,
+        "score": round(score, 4),
+        "games_sampled": p["games_sampled"],
+        "vs_opp_aligned": h2h_hit,
+        "opp_allowing_more": opp_allowing_more,
+        "opp_weak_defense": opp_weak_defense,
+        "reasons": reasons,
+    }
+
+
+def build_top_points_performers(report):
+    """
+    Points-only Top Performers list, scored on all 4 factors (own hit-rate,
+    head-to-head, opponent recent points-allowed trend, opponent
+    league-wide defensive rank) - see _points_score_for_player. This is
+    the strongest section since points is the only stat with real
+    opponent-defense data behind it.
+    """
+    candidates = []
+    for g in report:
+        for side_label, side_full, opponent_full, players in (
+            (g["away_team"], g["away_team_full"], g["home_team_full"], g["away_players"]),
+            (g["home_team"], g["home_team_full"], g["away_team_full"], g["home_players"]),
+        ):
+            for p in players:
+                if p["games_sampled"] < TOP_PERFORMERS_MIN_GAMES:
+                    continue
+                candidate = _points_score_for_player(p, side_label, side_full, opponent_full, g)
+                if candidate:
+                    candidates.append(candidate)
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    return candidates[:TOP_PERFORMERS_COUNT]
+
+
+def build_top_trend_performers(report):
+    """
+    Rebounds/assists/threes Top Performers list. Only 2 factors here -
+    own hit-rate and head-to-head - since there's no opponent-allowed data
+    for these stats (see the scoping decision: points stayed full-league,
+    these three were intentionally left out to avoid a large jump in API
+    calls). Kept as a clearly separate, clearly-labeled section so it
+    doesn't read as having the same depth as the points section.
     """
     candidates = []
     for g in report:
@@ -87,7 +197,8 @@ def build_top_performers(report):
                 if p["games_sampled"] < TOP_PERFORMERS_MIN_GAMES:
                     continue
                 best_for_player = None
-                for stat_key, thresholds in PROP_THRESHOLDS.items():
+                for stat_key in TREND_ONLY_STAT_KEYS:
+                    thresholds = PROP_THRESHOLDS[stat_key]
                     floors = p["floors"].get(stat_key, {})
                     if not floors:
                         continue
@@ -105,10 +216,6 @@ def build_top_performers(report):
                 if not best_for_player:
                     continue
 
-                # Boost tag: does their most recent vs-opponent game also
-                # clear this same threshold? Small bonus signal, not the
-                # primary ranking driver, since vs-opponent samples are
-                # small (1-2 games) and noisier than the 10-game floor.
                 vs_opp_aligned = False
                 vs_opp = p.get("vs_opponent")
                 if vs_opp and vs_opp.get("games"):
@@ -129,10 +236,10 @@ def build_top_performers(report):
                     "vs_opp_aligned": vs_opp_aligned,
                 })
 
-    # Primary sort: hit rate descending. Secondary: vs-opponent alignment
-    # as a tiebreaker boost, not primary driver, per the design discussion.
     candidates.sort(key=lambda c: (c["hit_rate"], c["vs_opp_aligned"]), reverse=True)
     return candidates[:TOP_PERFORMERS_COUNT]
+
+
 
 REQUEST_DELAY_SECONDS = 0.4
 MAX_RETRIES = 3
@@ -1393,11 +1500,45 @@ def _prob_bar(label, prob, color):
 
 STAT_DISPLAY_NAMES = {"points": "PTS", "rebounds": "REB", "assists": "AST", "threes": "3PM"}
 
-def _render_top_performers(top_performers):
-    if not top_performers:
+def _render_top_points_performers(top_points):
+    if not top_points:
         return ""
     items = []
-    for rank, tp in enumerate(top_performers, start=1):
+    for rank, tp in enumerate(top_points, start=1):
+        pct = tp["hit_rate"] * 100
+        reason_html = ""
+        if tp["reasons"]:
+            reason_items = "".join(f"<li>{r}</li>" for r in tp["reasons"])
+            reason_html = f'<ul class="tp-reasons">{reason_items}</ul>'
+        items.append(f"""
+        <div class="tp-card">
+          <div class="tp-rank">{rank}</div>
+          <div class="tp-body">
+            <p class="tp-name">{tp['name']} <span class="tp-team">{tp['team']}</span></p>
+            <p class="tp-matchup">vs {tp['opponent_full']}</p>
+            <div class="tp-stat-row">
+              <span class="tp-stat-badge">{tp['threshold']}+ Points</span>
+              <span class="tp-hit-rate">{pct:.0f}% <span class="tp-hit-rate-label">hit rate</span></span>
+              <span class="tp-games">last {tp['games_sampled']} games</span>
+            </div>
+            {reason_html}
+          </div>
+        </div>""")
+    return f"""
+    <section class="top-performers">
+      <h2 class="tp-heading">Today's Top Points Performers</h2>
+      <p class="tp-subheading">Points is the only stat with opponent-defense data behind it, so this list weighs 4 things: her own hit rate on a medium-difficulty line, whether she hit it in her last head-to-head vs this opponent, whether the opponent has recently been allowing more points than usual, and whether the opponent ranks weak defensively over their last 10 games.</p>
+      <div class="tp-grid">
+        {''.join(items)}
+      </div>
+    </section>"""
+
+
+def _render_top_trend_performers(top_trends):
+    if not top_trends:
+        return ""
+    items = []
+    for rank, tp in enumerate(top_trends, start=1):
         stat_label = STAT_DISPLAY_NAMES.get(tp["stat_key"], tp["stat_key"].upper())
         pct = tp["hit_rate"] * 100
         boost = '<span class="boost-tag">&#9733; matches recent vs opponent</span>' if tp["vs_opp_aligned"] else ""
@@ -1417,8 +1558,8 @@ def _render_top_performers(top_performers):
         </div>""")
     return f"""
     <section class="top-performers">
-      <h2 class="tp-heading">Today's Top Performers</h2>
-      <p class="tp-subheading">Ranked by hit rate on a medium-difficulty line - not the easy bar that hits every time, not a coinflip. Across all of today's games.</p>
+      <h2 class="tp-heading">Today's Top Rebounds/Assists/3PM Trends</h2>
+      <p class="tp-subheading">No opponent-defense data behind these three stats - this list is based only on the player's own hit rate on a medium-difficulty line and whether she hit it in her last head-to-head vs this opponent.</p>
       <div class="tp-grid">
         {''.join(items)}
       </div>
@@ -1426,7 +1567,8 @@ def _render_top_performers(top_performers):
 
 
 def render_html(report):
-    top_performers = build_top_performers(report)
+    top_points = build_top_points_performers(report)
+    top_trends = build_top_trend_performers(report)
     cards = []
     for g in report:
         block = []
@@ -1865,6 +2007,9 @@ h1 {{
   font-size: 0.76em;
   font-weight: 600;
 }}
+.tp-reasons {{ list-style: none; margin: 10px 0 0; padding: 0; }}
+.tp-reasons li {{ color: var(--text-dim); font-size: 0.78em; line-height: 1.5; margin: 4px 0 0; padding-left: 14px; position: relative; }}
+.tp-reasons li::before {{ content: "\\2022"; position: absolute; left: 0; color: var(--teal); }}
 </style>
 </head>
 <body>
@@ -1872,7 +2017,8 @@ h1 {{
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
 <p class="disclaimer">Estimates only, not guarantees. Injury flags are informational (pregame-confirmation speed) - always verify starters yourself before betting. Spread model uses season point differential with a rough rest-day adjustment; treat all outputs as directional.</p>
-{_render_top_performers(top_performers)}
+{_render_top_points_performers(top_points)}
+{_render_top_trend_performers(top_trends)}
 {''.join(cards)}
 </body>
 </html>"""
