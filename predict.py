@@ -395,6 +395,7 @@ def get_todays_games():
                 "away_team_abbr": away["team"].get("abbreviation"),
                 "away_team_name": away["team"].get("displayName") or away["team"].get("abbreviation"),
             })
+            print(f"DEBUG get_todays_games returning {len(games)} games: {[g['away_team_abbr']+'@'+g['home_team_abbr'] for g in games]}")
     return games
 
 
