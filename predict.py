@@ -347,7 +347,8 @@ def get_todays_games():
     for date_str in dates_to_query:
         try:
             payload = espn_site_get("/scoreboard", {"dates": date_str})
-        except Exception:
+        except Exception as e:
+            print(f"WARNING: scoreboard fetch failed for dates={date_str}: {e}")
             continue
         for e in payload.get("events", []):
             event_id = e.get("id")
@@ -2360,6 +2361,8 @@ if __name__ == "__main__":
         1 for g in report if any(s["home_cover_prob"] is not None for s in g["spread_lines"])
     )
     games_with_props = sum(1 for g in report if g["home_players"] or g["away_players"])
+    if len(report) == 0:
+        print("WARNING: 0 games in report - scoreboard fetch may have failed for all dates queried (check WARNING lines above).")
     print(f"Done. {len(report)} games processed.")
     print(f"  Spread data available for {games_with_spread_data}/{len(report)} games.")
     print(f"  Player props available for {games_with_props}/{len(report)} games.")
