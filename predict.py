@@ -41,6 +41,7 @@ ESPN_WEB_BASE = "https://site.web.api.espn.com/apis/site/v2/sports/basketball/wn
 ESPN_COMMON_BASE = "https://site.web.api.espn.com/apis/common/v3/sports/basketball/wnba"
 ESPN_CORE_BASE = "https://sports.core.api.espn.com/v2/sports/basketball/leagues/wnba"
 TODAY = local_now().strftime("%Y%m%d")
+print(f"DEBUG local_now={local_now()} TODAY={TODAY}")
 SEASON = 2026
 
 STARTERS_PER_TEAM = 5
