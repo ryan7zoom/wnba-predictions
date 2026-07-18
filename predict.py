@@ -45,11 +45,17 @@ SEASON = 2026
 
 STARTERS_PER_TEAM = 5
 PROP_GAMES_SAMPLE = 10
+# Only used now as the list of stat keys to compute. The actual threshold
+# values are no longer fixed - prop_floor_probs() builds a band centered on
+# each player's own recent average (see THRESHOLD_BAND_BELOW/ABOVE above),
+# so a real bookmaker line is far more likely to exist for whatever gets
+# picked here, instead of a blanket 10+/15+/20+/25+ that's trivial for a
+# 25-PPG star and irrelevant for a 6-PPG bench piece.
 PROP_THRESHOLDS = {
-    "points": (10, 15, 20, 25),
-    "rebounds": (4, 6, 8),
-    "assists": (2, 4, 6),
-    "threes": (1, 2, 3),
+    "points": None,
+    "rebounds": None,
+    "assists": None,
+    "threes": None,
 }
 
 # The "medium" threshold per stat is used for the Top Performers ranking -
@@ -95,12 +101,12 @@ def _points_score_for_player(p, side_label, side_full, opponent_full, g):
     Only points gets this treatment - rebounds/assists/threes don't have
     opponent-allowed data behind them (see TREND_ONLY_STAT_KEYS below).
     """
-    thresholds = PROP_THRESHOLDS[POINTS_STAT_KEY]
     floors = p["floors"].get(POINTS_STAT_KEY, {})
     if not floors:
         return None
-    idx = min(MEDIUM_THRESHOLD_INDEX, len(thresholds) - 1)
-    medium_t = thresholds[idx]
+    sorted_thresholds = sorted(floors.keys())
+    idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
+    medium_t = sorted_thresholds[idx]
     hit_rate = floors.get(medium_t)
     if hit_rate is None:
         return None
@@ -141,8 +147,8 @@ def _points_score_for_player(p, side_label, side_full, opponent_full, g):
 
     return {
         "name": p["name"],
-        "team": side_label,
-        "matchup": f"{side_label} vs {g['home_team'] if side_label == g['away_team'] else g['away_team']}",
+        "team": side_full,
+        "matchup": f"{side_full} vs {opponent_full}",
         "opponent_full": opponent_full,
         "stat_key": POINTS_STAT_KEY,
         "threshold": medium_t,
@@ -201,12 +207,12 @@ def build_top_trend_performers(report):
                     continue
                 best_for_player = None
                 for stat_key in TREND_ONLY_STAT_KEYS:
-                    thresholds = PROP_THRESHOLDS[stat_key]
                     floors = p["floors"].get(stat_key, {})
                     if not floors:
                         continue
-                    idx = min(MEDIUM_THRESHOLD_INDEX, len(thresholds) - 1)
-                    medium_t = thresholds[idx]
+                    sorted_thresholds = sorted(floors.keys())
+                    idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
+                    medium_t = sorted_thresholds[idx]
                     hit_rate = floors.get(medium_t)
                     if hit_rate is None:
                         continue
@@ -229,8 +235,8 @@ def build_top_trend_performers(report):
 
                 candidates.append({
                     "name": p["name"],
-                    "team": side_label,
-                    "matchup": f"{side_label} vs {g['home_team'] if side_label == g['away_team'] else g['away_team']}",
+                    "team": side_full,
+                    "matchup": f"{side_full} vs {opponent_full}",
                     "opponent_full": opponent_full,
                     "stat_key": best_for_player["stat_key"],
                     "threshold": best_for_player["threshold"],
@@ -1196,8 +1202,32 @@ def _extract_stat_value(game_entry, stat_key):
     return None
 
 
-def prop_floor_probs(games, stat_key, thresholds):
-    """Empirical P(stat >= threshold) over the sampled recent games."""
+THRESHOLD_BAND_BELOW = {
+    "points": 2,
+    "rebounds": 1,
+    "assists": 1,
+    "threes": 1,
+}
+THRESHOLD_BAND_ABOVE = 1
+THRESHOLD_MIN_FLOOR = {
+    "points": 1,
+    "rebounds": 1,
+    "assists": 1,
+    "threes": 0,
+}
+
+
+def prop_floor_probs(games, stat_key, thresholds=None):
+    """
+    Empirical P(stat >= threshold) over the sampled recent games.
+
+    If thresholds isn't given explicitly, build a player-specific band
+    centered on her own recent average for this stat (see
+    THRESHOLD_BAND_BELOW/ABOVE), mirroring strikeout_floor_probs() in the
+    MLB version, so the "floor" surfaced is one a book would plausibly
+    post - not a blanket threshold that's the same for a 22-PPG scorer
+    and a 6-PPG bench piece.
+    """
     n = len(games)
     if n == 0:
         return {}
@@ -1215,6 +1245,17 @@ def prop_floor_probs(games, stat_key, thresholds):
         # sampled games - return empty rather than a confident-looking 0%
         # for every threshold, since that's a data problem, not a real floor.
         return {}
+
+    if thresholds is None:
+        avg = sum(values) / len(values)
+        below = THRESHOLD_BAND_BELOW.get(stat_key, 2)
+        min_floor = THRESHOLD_MIN_FLOOR.get(stat_key, 1)
+        center = max(min_floor + below, round(avg))
+        thresholds = tuple(sorted(set(
+            t for t in range(center - below, center + THRESHOLD_BAND_ABOVE + 1)
+            if t >= min_floor
+        )))
+
     probs = {}
     for t in thresholds:
         hits = sum(1 for v in values if v >= t)
@@ -1257,8 +1298,8 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
                 print(f"DEBUG gamelog fetch itself failed: {debug_err}")
 
         floors = {}
-        for stat_key, thresholds in PROP_THRESHOLDS.items():
-            floors[stat_key] = prop_floor_probs(games, stat_key, thresholds)
+        for stat_key in PROP_THRESHOLDS:
+            floors[stat_key] = prop_floor_probs(games, stat_key)
 
         vs_opponent = None
         if opponent_team_id:
@@ -1609,7 +1650,7 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
     games = []
 
     for g in report:
-        matchup = f'{g["away_team"]} @ {g["home_team"]}'
+        matchup = f'{g["away_team_full"]} @ {g["home_team_full"]}'
         game_picks = []
 
         # --- player prop floors (points, rebounds, assists, threes) ---
@@ -1641,17 +1682,19 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
         # --- team spread covers (best line per team, not every threshold) ---
         best_spread_per_team = {}
         for s in g.get("spread_lines", []):
-            for side_label, prob in ((g["away_team"], s.get("away_cover_prob")),
-                                      (g["home_team"], s.get("home_cover_prob"))):
+            for side_label, side_full, prob in (
+                (g["away_team"], g["away_team_full"], s.get("away_cover_prob")),
+                (g["home_team"], g["home_team_full"], s.get("home_cover_prob")),
+            ):
                 if prob is not None and prob >= min_confidence:
                     key = side_label
                     candidate = {
                         "type": "Spread",
-                        "player": side_label,
+                        "player": side_full,
                         "team_context": matchup,
                         "pick_label": f'{s["spread"]:+} spread',
                         "prob": prob,
-                        "reasons": [f"model favors {side_label} to cover {s['spread']:+} today"],
+                        "reasons": [f"model favors {side_full} to cover {s['spread']:+} today"],
                     }
                     if key not in best_spread_per_team or prob > best_spread_per_team[key]["prob"]:
                         best_spread_per_team[key] = candidate
@@ -1683,7 +1726,7 @@ def _render_top_picks(games):
     if not games:
         return """
     <section class="top-picks">
-      <h2 class="top-picks-title">today's bet builders</h2>
+      <h2 class="top-picks-title">Today's Bet Builders</h2>
       <p class="top-picks-sub">No game had at least two picks clear our confidence bar today - that happens on days with tougher matchups. Check the full game breakdowns below instead.</p>
     </section>"""
 
@@ -1708,7 +1751,7 @@ def _render_top_picks(games):
 
         game_blocks.append(f"""
       <div class="bed-builder-group">
-        <h3 class="bed-builder-label">bet builder: {game["matchup"]}</h3>
+        <h3 class="bed-builder-label">Bet Builder: {game["matchup"]}</h3>
         <div class="pick-grid">
           {''.join(rows)}
         </div>
@@ -1716,8 +1759,8 @@ def _render_top_picks(games):
 
     return f"""
     <section class="top-picks">
-      <h2 class="top-picks-title">today's bet builders</h2>
-      <p class="top-picks-sub">Each group below has 2+ picks from the same game - spread cover and player props - so you can combine legs into a bet builder / same-game parlay. This reflects the model's own math, not a guarantee - always double-check before betting.</p>
+      <h2 class="top-picks-title">Today's Bet Builders</h2>
+      <p class="top-picks-sub">2+ picks per game to combine into a parlay — model math, NOT a guarantee.</p>
       {''.join(game_blocks)}
     </section>"""
 
@@ -2184,7 +2227,6 @@ h1 {{
 .bed-builder-label {{
   font-size: 0.85em;
   font-weight: 700;
-  text-transform: lowercase;
   color: var(--teal);
   margin: 0 0 10px;
 }}
@@ -2221,7 +2263,7 @@ h1 {{
 <h1>WNBA Daily Probabilities</h1>
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
-<p class="disclaimer">Estimates only, not guarantees. Injury flags are informational (pregame-confirmation speed) - always verify starters yourself before betting. Spread model uses season point differential with a rough rest-day adjustment; treat all outputs as directional.</p>
+<p class="disclaimer">Estimates only, NOT guarantees — verify starters and lines yourself before betting.</p>
 {top_picks_html}
 {_render_top_points_performers(top_points)}
 {_render_top_trend_performers(top_trends)}
