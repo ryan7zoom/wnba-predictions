@@ -2257,6 +2257,44 @@ h1 {{
   line-height: 1.5;
 }}
 .pick-reasons li {{ margin: 2px 0; }}
+
+.tab-nav {{
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 0 20px;
+  margin: 18px 0 4px;
+}}
+.tab-card {{
+  background: var(--card-bg, #131a2b);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text, #e8ecf4);
+}}
+.tab-card-title {{
+  font-size: 0.95em;
+  font-weight: 800;
+}}
+.tab-card-sub {{
+  font-size: 0.68em;
+  color: var(--text-dim, #8892a6);
+  line-height: 1.3;
+}}
+.tab-card.active {{
+  border-color: var(--teal, #2dd4bf);
+  background: rgba(45, 212, 191, 0.08);
+}}
+.tab-card.active .tab-card-title {{ color: var(--teal, #2dd4bf); }}
+.tab-panel {{ display: none; }}
+.tab-panel.active {{ display: block; }}
 </style>
 </head>
 <body>
@@ -2264,10 +2302,44 @@ h1 {{
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
 <p class="disclaimer">Estimates only, NOT guarantees — verify starters and lines yourself before betting.</p>
+
+<div class="tab-nav">
+  <button class="tab-card active" data-tab="tab-builders" onclick="showTab('tab-builders', this)">
+    <span class="tab-card-title">Bet Builders</span>
+    <span class="tab-card-sub">Same-game parlay picks</span>
+  </button>
+  <button class="tab-card" data-tab="tab-toppicks" onclick="showTab('tab-toppicks', this)">
+    <span class="tab-card-title">Top Picks</span>
+    <span class="tab-card-sub">Points, rebounds, assists, 3PM trends</span>
+  </button>
+  <button class="tab-card" data-tab="tab-everything" onclick="showTab('tab-everything', this)">
+    <span class="tab-card-title">All Games</span>
+    <span class="tab-card-sub">Spreads &amp; full prop breakdowns</span>
+  </button>
+</div>
+
+<div id="tab-builders" class="tab-panel active">
 {top_picks_html}
+</div>
+
+<div id="tab-toppicks" class="tab-panel">
 {_render_top_points_performers(top_points)}
 {_render_top_trend_performers(top_trends)}
+</div>
+
+<div id="tab-everything" class="tab-panel">
 {''.join(cards)}
+</div>
+
+<script>
+function showTab(id, btn) {{
+  document.querySelectorAll('.tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+  document.querySelectorAll('.tab-card').forEach(function(c) {{ c.classList.remove('active'); }});
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+  window.scrollTo({{ top: 0, behavior: 'instant' }});
+}}
+</script>
 </body>
 </html>"""
     return html
