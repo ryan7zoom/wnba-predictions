@@ -2,9 +2,10 @@ name: Daily WNBA Report
 
 on:
   schedule:
-    - cron: "0 7 * * *"    # ~3am ET / adjust as needed
-    - cron: "0 15 * * *"   # ~11am ET / adjust as needed
-    - cron: "0 23 * * *"   # ~7pm ET / adjust as needed
+    - cron: "0 20 * * *"   # 2:00 AM Bangladesh - well ahead of early morning games
+    - cron: "0 22 * * *"   # 4:00 AM Bangladesh - final buffer before ~6 AM games
+    - cron: "0 12 * * *"   # 6:00 PM Bangladesh - well ahead of night games
+    - cron: "0 15 * * *"   # 9:00 PM Bangladesh - final buffer before ~10 PM-1 AM games
   workflow_dispatch: {}
 
 permissions:
