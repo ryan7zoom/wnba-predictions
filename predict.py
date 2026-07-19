@@ -1205,19 +1205,96 @@ def _extract_stat_value(game_entry, stat_key):
     return None
 
 
-THRESHOLD_BAND_BELOW = {
+# Number of rungs per stat, and where the player's own average sits among
+# them. RUNGS_ABOVE_AVG rungs sit above the average, the rest sit below
+# it. Matches the requested shape: mostly sub-average lines (for real
+# granularity below the "obvious" bar) plus exactly one rung above avg.
+#   20 PPG example: 12, 15, 18, 20, 22  -> 3 below, avg, 1 above (5 rungs)
+#    8 PPG example: 3, 5, 7, 8, 10      -> 3 below, avg, 1 above (5 rungs)
+RUNG_COUNT = {
+    "points": 5,
+    "rebounds": 4,
+    "assists": 3,
+    "threes": 3,
+}
+RUNGS_ABOVE_AVG = 1
+
+# Step between rungs scales with the player's average rather than being a
+# flat league-wide number, so a 22-PPG star and a 6-PPG bench piece each
+# get gaps that look like real, postable bookmaker lines instead of the
+# same fixed increment applied to both. STEP_FRACTION is roughly "how many
+# rungs it'd take to span the full average" (avg / STEP_FRACTION), floored
+# at STEP_MIN so low-average stats don't collapse every rung onto one number.
+STEP_FRACTION = {
+    "points": 7,
+    "rebounds": 5,
+    "assists": 4,
+    "threes": 3,
+}
+STEP_MIN = {
     "points": 2,
     "rebounds": 1,
     "assists": 1,
     "threes": 1,
 }
-THRESHOLD_BAND_ABOVE = 1
+
+# Lowest threshold that's still a plausible real-world bookmaker line for
+# this stat - keeps the bottom rung from going so low it's meaningless
+# (e.g. "1+ points") even for a very low-average player.
 THRESHOLD_MIN_FLOOR = {
-    "points": 1,
-    "rebounds": 1,
+    "points": 3,
+    "rebounds": 2,
     "assists": 1,
     "threes": 0,
 }
+
+
+def _build_player_thresholds(avg, stat_key):
+    """
+    Builds a descending-then-one-above band of thresholds centered on a
+    player's own recent average for this stat: mostly rungs below the
+    average (for granularity under the "obvious" line) plus one rung
+    above it, with the gap between rungs scaling with the average itself.
+
+    Example (points, avg=20): 12, 15, 18, 20, 22
+    Example (points, avg=8):  3, 5, 7, 8, 10
+    """
+    rung_count = RUNG_COUNT.get(stat_key, 4)
+    above = min(RUNGS_ABOVE_AVG, rung_count - 1)
+    below = rung_count - 1 - above
+    min_floor = THRESHOLD_MIN_FLOOR.get(stat_key, 1)
+
+    step_fraction = STEP_FRACTION.get(stat_key, 5)
+    step_min = STEP_MIN.get(stat_key, 1)
+    base_step = max(step_min, round(avg / step_fraction))
+
+    center = max(min_floor, round(avg))
+
+    # Steps shrink as they approach the average (wider gaps far below,
+    # tighter gaps close to it) - matches 12,15,18,20,22 (steps 3,3,2,2)
+    # and 3,5,7,8,10 (steps 2,2,1,2) rather than one flat step throughout.
+    # The rung closest to the average uses a step one smaller than the
+    # base step (floored at step_min); all farther rungs use the base step.
+    thresholds = []
+    t = center
+    for i in range(below, 0, -1):
+        near_avg = (i == 1)
+        this_step = max(step_min, base_step - 1) if near_avg else base_step
+        t = t - this_step
+        thresholds.insert(0, t)
+    thresholds.append(center)
+    thresholds += [center + base_step * i for i in range(1, above + 1)]
+
+    # Clamp to the floor and de-dupe (small averages can otherwise repeat
+    # the same rung), preserving ascending order.
+    thresholds = sorted(set(t for t in thresholds if t >= min_floor))
+
+    # If clamping collapsed rungs below the target count, pad upward from
+    # the top so the player still gets a full set of lines.
+    while len(thresholds) < rung_count:
+        thresholds.append(thresholds[-1] + base_step)
+
+    return tuple(thresholds)
 
 
 def prop_floor_probs(games, stat_key, thresholds=None):
@@ -1225,11 +1302,10 @@ def prop_floor_probs(games, stat_key, thresholds=None):
     Empirical P(stat >= threshold) over the sampled recent games.
 
     If thresholds isn't given explicitly, build a player-specific band
-    centered on her own recent average for this stat (see
-    THRESHOLD_BAND_BELOW/ABOVE), mirroring strikeout_floor_probs() in the
-    MLB version, so the "floor" surfaced is one a book would plausibly
-    post - not a blanket threshold that's the same for a 22-PPG scorer
-    and a 6-PPG bench piece.
+    centered on her own recent average for this stat via
+    _build_player_thresholds(), so the lines surfaced are ones a book
+    would plausibly post for HER specifically - not a blanket threshold
+    that's the same for a 22-PPG scorer and a 6-PPG bench piece.
     """
     n = len(games)
     if n == 0:
@@ -1251,13 +1327,7 @@ def prop_floor_probs(games, stat_key, thresholds=None):
 
     if thresholds is None:
         avg = sum(values) / len(values)
-        below = THRESHOLD_BAND_BELOW.get(stat_key, 2)
-        min_floor = THRESHOLD_MIN_FLOOR.get(stat_key, 1)
-        center = max(min_floor + below, round(avg))
-        thresholds = tuple(sorted(set(
-            t for t in range(center - below, center + THRESHOLD_BAND_ABOVE + 1)
-            if t >= min_floor
-        )))
+        thresholds = _build_player_thresholds(avg, stat_key)
 
     probs = {}
     for t in thresholds:
