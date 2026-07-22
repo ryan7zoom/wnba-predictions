@@ -394,21 +394,46 @@ def get_todays_games():
     local_today = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
     local_tomorrow_start = local_today + timedelta(days=1)
 
-    dates_to_query = [
-        (local_today - timedelta(days=1)).strftime("%Y%m%d"),
-        local_today.strftime("%Y%m%d"),
-        local_tomorrow_start.strftime("%Y%m%d"),
-    ]
+    date_a = (local_today - timedelta(days=1)).strftime("%Y%m%d")
+    date_b = local_today.strftime("%Y%m%d")
+    date_c = local_tomorrow_start.strftime("%Y%m%d")
+    dates_to_query = [date_a, date_b, date_c]
 
     seen_event_ids = set()
     games = []
+    all_events = []
+    any_events_seen = False
     for date_str in dates_to_query:
         try:
             payload = espn_site_get("/scoreboard", {"dates": date_str})
         except Exception as e:
             print(f"WARNING: scoreboard fetch failed for dates={date_str}: {e}")
             continue
-        for e in payload.get("events", []):
+        events = payload.get("events", [])
+        print(f"DEBUG single-date query dates={date_str} -> {len(events)} events")
+        if events:
+            any_events_seen = True
+        all_events.extend(events)
+
+    # ESPN's single-date scoreboard bucket can come back HTTP 200 with an
+    # empty events list even on a date that genuinely has games (a known
+    # quirk of this undocumented endpoint - it's not a network/auth error,
+    # so the try/except above never catches it). If ALL three single-date
+    # calls came back empty, fall back to the range-query syntax
+    # (dates=YYYYMMDD-YYYYMMDD), which ESPN's own scoreboard UI uses
+    # internally and doesn't appear to hit the same empty-bucket issue.
+    if not any_events_seen:
+        range_param = f"{date_a}-{date_c}"
+        print(f"WARNING: all single-date queries returned 0 events - retrying with range dates={range_param}")
+        try:
+            range_payload = espn_site_get("/scoreboard", {"dates": range_param})
+            range_events = range_payload.get("events", [])
+            print(f"DEBUG range query dates={range_param} -> {len(range_events)} events")
+            all_events.extend(range_events)
+        except Exception as e:
+            print(f"WARNING: range scoreboard fetch failed for dates={range_param}: {e}")
+
+    for e in all_events:
             event_id = e.get("id")
             if not event_id or event_id in seen_event_ids:
                 continue
