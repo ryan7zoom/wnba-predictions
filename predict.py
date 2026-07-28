@@ -1878,17 +1878,24 @@ def _render_top_points_performers(top_points):
             reason_items = "".join(f"<li>{r}</li>" for r in tp["reasons"])
             reason_html = f'<ul class="tp-reasons">{reason_items}</ul>'
         items.append(f"""
-        <div class="tp-card">
+        <div class="tp-card collapsible">
           <div class="tp-rank">{rank}</div>
           <div class="tp-body">
-            <p class="tp-name">{tp['name']} <span class="tp-team">{tp['team']}</span></p>
-            <p class="tp-matchup">vs {tp['opponent_full']}</p>
-            <div class="tp-stat-row">
-              <span class="tp-stat-badge">{tp['threshold']}+ Points</span>
-              <span class="tp-hit-rate">{pct:.0f}% <span class="tp-hit-rate-label">hit rate</span></span>
-              <span class="tp-games">last {tp['games_sampled']} games</span>
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">{tp['name']} <span class="tp-team">{tp['team']}</span></p>
+                <p class="tp-matchup">vs {tp['opponent_full']}</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">{tp['threshold']}+ Points</span>
+                  <span class="tp-hit-rate">{pct:.0f}% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last {tp['games_sampled']} games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
             </div>
-            {reason_html}
+            <div class="collapsible-body">
+              {reason_html}
+            </div>
           </div>
         </div>""")
     return f"""
@@ -1913,18 +1920,25 @@ def _render_top_trend_performers(top_trends):
         if tp.get("reasons"):
             reasons_html = '<ul class="tp-reasons">' + "".join(f"<li>{r}</li>" for r in tp["reasons"]) + "</ul>"
         items.append(f"""
-        <div class="tp-card">
+        <div class="tp-card collapsible">
           <div class="tp-rank">{rank}</div>
           <div class="tp-body">
-            <p class="tp-name">{tp['name']} <span class="tp-team">{tp['team']}</span></p>
-            <p class="tp-matchup">vs {tp['opponent_full']}</p>
-            <div class="tp-stat-row">
-              <span class="tp-stat-badge">{tp['threshold']}+ {stat_label}</span>
-              <span class="tp-hit-rate">{pct:.0f}% <span class="tp-hit-rate-label">hit rate</span></span>
-              <span class="tp-games">last {tp['games_sampled']} games</span>
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">{tp['name']} <span class="tp-team">{tp['team']}</span></p>
+                <p class="tp-matchup">vs {tp['opponent_full']}</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">{tp['threshold']}+ {stat_label}</span>
+                  <span class="tp-hit-rate">{pct:.0f}% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last {tp['games_sampled']} games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
             </div>
-            {boost}
-            {reasons_html}
+            <div class="collapsible-body">
+              {boost}
+              {reasons_html}
+            </div>
           </div>
         </div>""")
     return f"""
@@ -2183,10 +2197,15 @@ def _render_top_picks(games):
           </div>""")
 
         game_blocks.append(f"""
-      <div class="bed-builder-group">
-        <h3 class="bed-builder-label">Bet Builder: {game["matchup"]}</h3>
+      <div class="bed-builder-group collapsible">
+        <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+          <h3 class="bed-builder-label">Bet Builder: {game["matchup"]}</h3>
+          <span class="collapsible-chevron">&#9660;</span>
+        </div>
+        <div class="collapsible-body">
         <div class="pick-grid">
           {''.join(rows)}
+        </div>
         </div>
       </div>""")
 
@@ -2205,12 +2224,17 @@ def render_html(report):
     cards = []
     for g in report:
         block = []
-        block.append(f'<section class="matchup-card">')
-        block.append(f'<div class="matchup-header">')
+        block.append(f'<section class="matchup-card collapsible">')
+        block.append(f'<div class="matchup-header collapsible-toggle" onclick="toggleCollapsible(this)">')
+        block.append(f'<div>')
         block.append(f'<div class="court-line"></div>')
         block.append(f'<h2>{g["away_team_full"]} <span class="at-sign">@</span> {g["home_team_full"]}</h2>')
         rest_txt = f'{g["away_team"]} rest {g["away_rest_days"]}d &middot; {g["home_team"]} rest {g["home_rest_days"]}d'
         block.append(f'<p class="rest-line">{rest_txt}</p>')
+        block.append(f'</div>')
+        block.append(f'<span class="collapsible-chevron">&#9660;</span>')
+        block.append(f'</div>')
+        block.append(f'<div class="collapsible-body">')
 
         away_rank = g.get("away_league_rank")
         home_rank = g.get("home_league_rank")
@@ -2241,7 +2265,6 @@ def render_html(report):
                 for line in lines:
                     block.append(f'<li>{line}</li>')
             block.append('</ul>')
-        block.append('</div>')
 
         flags = g["away_flags"] + g["home_flags"]
         if flags:
@@ -2356,6 +2379,7 @@ def render_html(report):
                     block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["minutes_note"]}</div>')
                 block.append('</div>')
             block.append('</div>')
+        block.append('</div>')  # close collapsible-body
         block.append('</section>')
         cards.append("".join(block))
 
@@ -2743,7 +2767,54 @@ h1 {{
 .tab-card.active .tab-card-title {{ color: var(--teal, #2dd4bf); }}
 .tab-panel {{ display: none; }}
 .tab-panel.active {{ display: block; }}
+
+/* Collapsible game/card headers */
+.collapsible-toggle {{
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  user-select: none;
+}}
+.collapsible-toggle:hover {{ opacity: 0.9; }}
+.collapsible-chevron {{
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #8892a6);
+  font-size: 0.85em;
+  transition: transform 0.2s ease;
+}}
+.collapsible-body {{
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.25s ease;
+}}
+.collapsible.expanded .collapsible-chevron {{ transform: rotate(180deg); }}
+.collapsible.expanded .collapsible-body {{ max-height: none; }}
 </style>
+<script>
+function toggleCollapsible(headerEl) {{
+  var card = headerEl.closest('.collapsible');
+  if (!card) return;
+  var body = card.querySelector('.collapsible-body');
+  var isExpanded = card.classList.contains('expanded');
+  if (isExpanded) {{
+    card.classList.remove('expanded');
+    body.style.maxHeight = '0px';
+  }} else {{
+    card.classList.add('expanded');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    setTimeout(function() {{
+      if (card.classList.contains('expanded')) body.style.maxHeight = 'none';
+    }}, 260);
+  }}
+}}
+</script>
 </head>
 <body>
 <h1>WNBA Daily Probabilities</h1>
