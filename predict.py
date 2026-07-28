@@ -2193,11 +2193,6 @@ def _render_top_picks(games):
     return f"""
     <section class="top-picks">
       <h2 class="top-picks-title">Today's Bet Builders</h2>
-      <p class="top-picks-sub">2+ picks per game to combine into a parlay. Every pick shown here already
-      cleared a high hit-rate bar AND is a real number a bookmaker would actually list (no more joke
-      lines like "0+ threes"). Picks marked <strong>THIN MARGIN</strong> still passed the hit-rate bar,
-      but she's usually barely scraping over that number rather than clearing it comfortably — treat
-      those as the first legs to cut if you want a safer combo. Model math, NOT a guarantee.</p>
       {''.join(game_blocks)}
     </section>"""
 
