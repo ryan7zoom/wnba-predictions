@@ -2068,9 +2068,9 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
         game_picks = []
 
         # --- player prop floors (points, rebounds, assists, threes) ---
-        for side_label, players in (
-            (g["away_team"], g["away_players"]),
-            (g["home_team"], g["home_players"]),
+        for side_label, side_full, is_home, players in (
+            (g["away_team"], g["away_team_full"], False, g["away_players"]),
+            (g["home_team"], g["home_team_full"], True, g["home_players"]),
         ):
             for p in players:
                 recent_games = p.get("recent_games") or []
@@ -2111,6 +2111,9 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "type": stat_label,
                         "player": p["name"],
                         "team_context": matchup,
+                        "team_abbr": side_label,
+                        "team_full": side_full,
+                        "is_home": is_home,
                         "pick_label": f'{best["threshold"]}+ {stat_label}',
                         "prob": best["prob"],
                         "reasons": reasons,
@@ -2120,9 +2123,9 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
         # --- team spread covers (best line per team, not every threshold) ---
         best_spread_per_team = {}
         for s in g.get("spread_lines", []):
-            for side_label, side_full, prob in (
-                (g["away_team"], g["away_team_full"], s.get("away_cover_prob")),
-                (g["home_team"], g["home_team_full"], s.get("home_cover_prob")),
+            for side_label, side_full, is_home, prob in (
+                (g["away_team"], g["away_team_full"], False, s.get("away_cover_prob")),
+                (g["home_team"], g["home_team_full"], True, s.get("home_cover_prob")),
             ):
                 if prob is not None and prob >= min_confidence:
                     key = side_label
@@ -2130,6 +2133,9 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "type": "Spread",
                         "player": side_full,
                         "team_context": matchup,
+                        "team_abbr": side_label,
+                        "team_full": side_full,
+                        "is_home": is_home,
                         "pick_label": f'{s["spread"]:+} spread',
                         "prob": prob,
                         "reasons": [f"model favors {side_full} to cover {s['spread']:+} today"],
@@ -2150,10 +2156,53 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                 "matchup": matchup,
                 "best_prob": game_picks[0]["prob"],
                 "picks": game_picks,
+                "game_report": g,
             })
 
     games.sort(key=lambda x: x["best_prob"], reverse=True)
     return games[:limit]
+
+
+def _render_matchup_summary(game_report):
+    """
+    Compact matchup-context block for the top of each Bet Builder game
+    card. Pulls from the same data as the full "All Games" matchup-facts
+    list, but only the halves that are actually relevant to this specific
+    game: both teams' league-wide last-10-games rank (offense/defense),
+    plus ONLY the away team's road split and the home team's home split -
+    not the away team's home split or the home team's away split, since
+    those don't apply to how these two teams are playing each other today.
+    """
+    away_rank = game_report.get("away_league_rank")
+    home_rank = game_report.get("home_league_rank")
+    away_split = game_report.get("away_team_split")
+    home_split = game_report.get("home_team_split")
+
+    lines = []
+    for team_full, rank in (
+        (game_report["away_team_full"], away_rank),
+        (game_report["home_team_full"], home_rank),
+    ):
+        if rank:
+            lines.append(f'{team_full}: #{rank["off_rank"]} offense, #{rank["def_rank"]} defense, '
+                          f'out of {rank["teams_ranked"]} teams in the last 10 games.')
+
+    if away_split and away_split.get("away"):
+        s = away_split["away"]
+        lines.append(f'{game_report["away_team_full"]} scored {s["pts_for_pg"]:.1f} and allowed '
+                      f'{s["pts_against_pg"]:.1f} points per game on the road this season '
+                      f'({s["games_counted"]} games).')
+    if home_split and home_split.get("home"):
+        s = home_split["home"]
+        lines.append(f'{game_report["home_team_full"]} scored {s["pts_for_pg"]:.1f} and allowed '
+                      f'{s["pts_against_pg"]:.1f} points per game at home this season '
+                      f'({s["games_counted"]} games).')
+
+    if not lines:
+        return ""
+
+    items = "".join(f"<li>{line}</li>" for line in lines)
+    return f'<ul class="matchup-summary-mini">{items}</ul>'
 
 
 def _render_top_picks(games):
@@ -2172,20 +2221,17 @@ def _render_top_picks(games):
       <p class="top-picks-sub">No game had at least two picks clear our confidence bar today - that happens on days with tougher matchups. Check the full game breakdowns below instead.</p>
     </section>"""
 
-    game_blocks = []
-    for game in games:
-        rows = []
-        for pk in game["picks"]:
-            pct = pk["prob"] * 100
-            reasons_html = ""
-            if pk.get("reasons"):
-                reasons_html = '<ul class="pick-reasons">' + "".join(f"<li>{r}</li>" for r in pk["reasons"]) + "</ul>"
-            thin_badge = ""
-            card_class = "pick-card"
-            if pk.get("thin_margin"):
-                card_class += " pick-card-thin"
-                thin_badge = '<span class="thin-margin-badge">THIN MARGIN</span>'
-            rows.append(f"""
+    def _render_pick_card(pk):
+        pct = pk["prob"] * 100
+        reasons_html = ""
+        if pk.get("reasons"):
+            reasons_html = '<ul class="pick-reasons">' + "".join(f"<li>{r}</li>" for r in pk["reasons"]) + "</ul>"
+        thin_badge = ""
+        card_class = "pick-card"
+        if pk.get("thin_margin"):
+            card_class += " pick-card-thin"
+            thin_badge = '<span class="thin-margin-badge">THIN MARGIN</span>'
+        return f"""
           <div class="{card_class}">
             <div class="pick-card-top">
               <span class="pick-type">{pk["type"]}</span>
@@ -2194,7 +2240,40 @@ def _render_top_picks(games):
             <p class="pick-player">{pk["player"]} {thin_badge}</p>
             <p class="pick-line">{pk["pick_label"]}</p>
             {reasons_html}
-          </div>""")
+          </div>"""
+
+    game_blocks = []
+    for game in games:
+        summary_html = ""
+        if game.get("game_report"):
+            summary_html = _render_matchup_summary(game["game_report"])
+
+        # Split picks by team, home team's group first. Within each group,
+        # the existing sort (comfortable picks first, then by probability)
+        # is preserved since game["picks"] was already sorted that way.
+        home_rows = [_render_pick_card(pk) for pk in game["picks"] if pk.get("is_home")]
+        away_rows = [_render_pick_card(pk) for pk in game["picks"] if not pk.get("is_home")]
+
+        home_full = next((pk["team_full"] for pk in game["picks"] if pk.get("is_home")), None)
+        away_full = next((pk["team_full"] for pk in game["picks"] if not pk.get("is_home")), None)
+
+        team_sections = []
+        if home_rows:
+            team_sections.append(f"""
+        <div class="pick-team-group">
+          <h4 class="pick-team-label">{home_full} <span class="home-away-tag">(home)</span></h4>
+          <div class="pick-grid">
+            {''.join(home_rows)}
+          </div>
+        </div>""")
+        if away_rows:
+            team_sections.append(f"""
+        <div class="pick-team-group">
+          <h4 class="pick-team-label">{away_full} <span class="home-away-tag">(away)</span></h4>
+          <div class="pick-grid">
+            {''.join(away_rows)}
+          </div>
+        </div>""")
 
         game_blocks.append(f"""
       <div class="bed-builder-group collapsible">
@@ -2203,9 +2282,8 @@ def _render_top_picks(games):
           <span class="collapsible-chevron">&#9660;</span>
         </div>
         <div class="collapsible-body">
-        <div class="pick-grid">
-          {''.join(rows)}
-        </div>
+        {summary_html}
+        {''.join(team_sections)}
         </div>
       </div>""")
 
@@ -2678,6 +2756,31 @@ h1 {{
 .top-picks-title {{ font-size: 1.1em; font-weight: 800; margin: 0 0 4px; color: var(--text); }}
 .top-picks-sub {{ font-size: 0.78em; color: var(--text-dim); line-height: 1.5; margin: 0 0 14px; }}
 .pick-grid {{ display: flex; flex-direction: column; gap: 10px; }}
+.matchup-summary-mini {{
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  background: var(--track-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  font-size: 0.78em;
+  color: var(--text-dim);
+  line-height: 1.6;
+}}
+.matchup-summary-mini li {{ margin: 0; }}
+.pick-team-group {{ margin-bottom: 16px; }}
+.pick-team-group:last-child {{ margin-bottom: 0; }}
+.pick-team-label {{
+  font-size: 0.82em;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 8px;
+}}
+.home-away-tag {{
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text-dim);
+}}
 .bed-builder-group {{ margin-bottom: 20px; }}
 .bed-builder-group:last-child {{ margin-bottom: 0; }}
 .bed-builder-label {{
