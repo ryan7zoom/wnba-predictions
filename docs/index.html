@@ -1,0 +1,1827 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WNBA Daily Probabilities</title>
+<style>
+:root {
+  --bg: #0B1120;
+  --card: #131B2E;
+  --card-border: #1F2A44;
+  --orange: #E8630A;
+  --teal: #2DD4BF;
+  --amber: #F5A623;
+  --text: #F7F8FA;
+  --text-dim: #AEB8CC;
+  --h1-accent: #ffb35c;
+  --disclaimer-text: #E39A9A;
+  --disclaimer-bg: rgba(232, 99, 10, 0.08);
+  --disclaimer-border: rgba(232, 99, 10, 0.2);
+  --flag-bg: rgba(245, 166, 35, 0.12);
+  --flag-border: rgba(245, 166, 35, 0.35);
+  --row-tint: rgba(255,255,255,0.02);
+  --track-bg: rgba(255,255,255,0.08);
+  --pill-hot-bg: rgba(45, 212, 191, 0.16);
+  --pill-hot-text: #5eead4;
+  --pill-hot-border: rgba(45, 212, 191, 0.4);
+  --pill-warm-bg: rgba(232, 99, 10, 0.16);
+  --pill-warm-text: #ffab6b;
+  --pill-warm-border: rgba(232, 99, 10, 0.4);
+  --pill-cool-bg: rgba(255,255,255,0.04);
+  --pill-cool-text: #9AA5BC;
+  --pill-cool-border: rgba(255,255,255,0.10);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #F7F8FA;
+    --card: #FFFFFF;
+    --card-border: #E2E6ED;
+    --orange: #D4560A;
+    --teal: #0D9488;
+    --amber: #B8730E;
+    --text: #1A2233;
+    --text-dim: #64708A;
+    --h1-accent: #E8630A;
+    --disclaimer-text: #A8391F;
+    --disclaimer-bg: rgba(212, 86, 10, 0.06);
+    --disclaimer-border: rgba(212, 86, 10, 0.18);
+    --flag-bg: rgba(184, 115, 14, 0.08);
+    --flag-border: rgba(184, 115, 14, 0.3);
+    --row-tint: rgba(20, 30, 50, 0.02);
+    --track-bg: rgba(20, 30, 50, 0.08);
+    --pill-hot-bg: rgba(13, 148, 136, 0.1);
+    --pill-hot-text: #0D9488;
+    --pill-hot-border: rgba(13, 148, 136, 0.3);
+    --pill-warm-bg: rgba(212, 86, 10, 0.1);
+    --pill-warm-text: #B8480E;
+    --pill-warm-border: rgba(212, 86, 10, 0.3);
+    --pill-cool-bg: rgba(20, 30, 50, 0.03);
+    --pill-cool-text: #7A879E;
+    --pill-cool-border: rgba(20, 30, 50, 0.08);
+  }
+}
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, "Segoe UI", sans-serif;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 16px;
+  background: var(--bg);
+  color: var(--text);
+}
+h1 {
+  font-family: "Arial Narrow", "Oswald", -apple-system, sans-serif;
+  font-weight: 800;
+  font-size: 1.9em;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin: 4px 0 2px;
+  background: linear-gradient(90deg, var(--orange), var(--h1-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.updated { color: var(--text-dim); font-size: 0.82em; margin: 0 0 10px; }
+.disclaimer {
+  color: var(--disclaimer-text);
+  font-size: 0.78em;
+  background: var(--disclaimer-bg);
+  border: 1px solid var(--disclaimer-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 22px;
+  line-height: 1.5;
+}
+
+.matchup-card {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 0 0 22px;
+  margin-bottom: 28px;
+  overflow: hidden;
+}
+.matchup-header { padding: 20px 20px 12px; }
+.court-line {
+  height: 3px;
+  width: 100%;
+  background: linear-gradient(90deg, var(--orange), var(--teal));
+  margin: -1px -1px 16px -1px;
+  width: calc(100% + 2px);
+}
+.matchup-header h2 {
+  font-family: "Arial Narrow", "Oswald", -apple-system, sans-serif;
+  font-weight: 700;
+  font-size: 1.25em;
+  letter-spacing: 0.01em;
+  margin: 0;
+  line-height: 1.3;
+  color: var(--text);
+}
+.at-sign { color: var(--text-dim); font-weight: 400; }
+.rest-line { color: var(--text-dim); font-size: 0.82em; margin: 8px 0 0; }
+.matchup-facts { list-style: none; margin: 10px 0 0; padding: 0; }
+.matchup-facts li { color: var(--text-dim); font-size: 0.82em; line-height: 1.5; margin: 6px 0 0; padding-left: 14px; position: relative; }
+.matchup-facts li::before { content: "\2022"; position: absolute; left: 0; color: var(--teal); }
+
+.flag-stack { padding: 0 20px; display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.flag-chip {
+  color: var(--amber);
+  background: var(--flag-bg);
+  border: 1px solid var(--flag-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+.flag-chip-inline { margin: 12px 0 0; }
+
+.section-label {
+  color: var(--text-dim);
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  padding: 0 20px;
+  margin: 26px 0 12px;
+}
+
+.spread-block { padding: 0 20px; display: flex; flex-direction: column; gap: 12px; }
+.spread-row-group {
+  background: var(--row-tint);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+}
+.spread-num {
+  display: block;
+  font-weight: 700;
+  font-size: 0.85em;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+.pbar-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.pbar-label { width: 34px; font-size: 0.78em; color: var(--text-dim); font-weight: 600; flex-shrink: 0; }
+.pbar-track { flex: 1; height: 8px; background: var(--track-bg); border-radius: 4px; overflow: hidden; }
+.pbar-fill { height: 100%; border-radius: 4px; }
+.pbar-na { width: 0%; }
+.pbar-value { width: 38px; text-align: right; font-size: 0.82em; font-weight: 700; flex-shrink: 0; color: var(--text); }
+.pbar-na-text { color: var(--text-dim); font-weight: 400; }
+
+.team-group {
+  margin: 0 0 24px;
+  padding-bottom: 4px;
+}
+.team-group + .team-group {
+  border-top: 2px solid var(--card-border);
+  padding-top: 18px;
+}
+.team-sublabel {
+  padding: 0 20px;
+  color: var(--text-dim);
+  font-size: 0.72em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  margin: 22px 0 10px;
+}
+.team-sublabel:first-of-type { margin-top: 4px; }
+.player-team { color: var(--text-dim); font-weight: 500; font-size: 0.85em; }
+
+.player-block {
+  padding: 14px 20px 16px;
+  border-top: 1px solid var(--card-border);
+}
+.player-block:first-of-type { border-top: none; padding-top: 0; }
+.player-name { font-size: 0.98em; font-weight: 700; margin: 0 0 10px; color: var(--text); }
+.games-sampled { color: var(--text-dim); font-weight: 400; font-size: 0.82em; }
+
+.stat-group { margin-bottom: 10px; }
+.stat-group-label {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.68em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill {
+  font-size: 0.74em;
+  font-weight: 700;
+  padding: 5px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+  letter-spacing: 0.01em;
+}
+.pill-hot { background: var(--pill-hot-bg); color: var(--pill-hot-text); border: 1px solid var(--pill-hot-border); }
+.pill-warm { background: var(--pill-warm-bg); color: var(--pill-warm-text); border: 1px solid var(--pill-warm-border); }
+.pill-cool { background: var(--pill-cool-bg); color: var(--pill-cool-text); border: 1px solid var(--pill-cool-border); }
+
+.vs-opp-line { color: var(--text-dim); font-size: 0.78em; margin: 12px 0 0; line-height: 1.6; }
+.vs-opp-empty { font-style: italic; }
+
+.top-performers { margin-bottom: 32px; }
+.tp-heading {
+  font-family: "Arial Narrow", "Oswald", -apple-system, sans-serif;
+  font-weight: 800;
+  font-size: 1.15em;
+  letter-spacing: 0.01em;
+  color: var(--text);
+  margin: 0 0 6px;
+}
+.tp-subheading { color: var(--text-dim); font-size: 0.8em; line-height: 1.5; margin: 0 0 18px; }
+.tp-grid { display: flex; flex-direction: column; gap: 12px; }
+.tp-card {
+  display: flex;
+  gap: 14px;
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.tp-rank {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--orange), var(--teal));
+  color: #0B1120;
+  font-weight: 800;
+  font-size: 0.82em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.tp-body { flex: 1; min-width: 0; }
+.tp-name { font-weight: 700; font-size: 0.98em; margin: 0 0 2px; color: var(--text); }
+.tp-team { color: var(--text-dim); font-weight: 500; font-size: 0.85em; }
+.tp-matchup { color: var(--text-dim); font-size: 0.8em; margin: 0 0 10px; }
+.tp-stat-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.tp-stat-badge {
+  background: var(--pill-hot-bg);
+  color: var(--pill-hot-text);
+  border: 1px solid var(--pill-hot-border);
+  font-weight: 700;
+  font-size: 0.78em;
+  padding: 4px 10px;
+  border-radius: 20px;
+}
+.tp-hit-rate { font-weight: 800; font-size: 1em; color: var(--text); }
+.tp-hit-rate-label { font-weight: 400; font-size: 0.75em; color: var(--text-dim); }
+.tp-games { color: var(--text-dim); font-size: 0.78em; }
+.boost-tag {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--amber);
+  font-size: 0.76em;
+  font-weight: 600;
+}
+.tp-reasons { list-style: none; margin: 10px 0 0; padding: 0; }
+.tp-reasons li { color: var(--text-dim); font-size: 0.78em; line-height: 1.5; margin: 4px 0 0; padding-left: 14px; position: relative; }
+.tp-reasons li::before { content: "\2022"; position: absolute; left: 0; color: var(--teal); }
+
+.top-picks {
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 14px;
+  padding: 20px 18px;
+  margin-bottom: 22px;
+}
+.top-picks-title { font-size: 1.1em; font-weight: 800; margin: 0 0 4px; color: var(--text); }
+.top-picks-sub { font-size: 0.78em; color: var(--text-dim); line-height: 1.5; margin: 0 0 14px; }
+.pick-grid { display: flex; flex-direction: column; gap: 10px; }
+.bed-builder-group { margin-bottom: 20px; }
+.bed-builder-group:last-child { margin-bottom: 0; }
+.bed-builder-label {
+  font-size: 0.85em;
+  font-weight: 700;
+  color: var(--teal);
+  margin: 0 0 10px;
+}
+.pick-card {
+  background: var(--track-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.pick-card-thin {
+  border: 1px solid var(--amber, #f5a623);
+  background: rgba(245, 166, 35, 0.06);
+}
+.thin-margin-badge {
+  display: inline-block;
+  background: var(--amber, #f5a623);
+  color: #0B1120;
+  font-size: 0.65em;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+.pick-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.pick-type {
+  font-size: 0.68em;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.pick-prob { font-size: 1.1em; font-weight: 800; color: var(--teal); }
+.pick-player { font-size: 0.98em; font-weight: 700; color: var(--text); margin: 0 0 2px; }
+.pick-line { font-size: 0.88em; font-weight: 600; color: var(--orange); margin: 0 0 2px; }
+.pick-context { font-size: 0.75em; color: var(--text-dim); margin: 0; }
+.pick-reasons {
+  margin: 8px 0 0;
+  padding: 0 0 0 16px;
+  list-style: disc;
+  font-size: 0.75em;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.pick-reasons li { margin: 2px 0; }
+
+.tab-nav {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 0 20px;
+  margin: 18px 0 4px;
+}
+.tab-card {
+  background: var(--card-bg, #131a2b);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  color: var(--text, #e8ecf4);
+}
+.tab-card-title {
+  font-size: 0.95em;
+  font-weight: 800;
+}
+.tab-card-sub {
+  font-size: 0.68em;
+  color: var(--text-dim, #8892a6);
+  line-height: 1.3;
+}
+.tab-card.active {
+  border-color: var(--teal, #2dd4bf);
+  background: rgba(45, 212, 191, 0.08);
+}
+.tab-card.active .tab-card-title { color: var(--teal, #2dd4bf); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* Collapsible game/card headers */
+.collapsible-toggle {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  user-select: none;
+}
+.collapsible-toggle:hover { opacity: 0.9; }
+.collapsible-chevron {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim, #8892a6);
+  font-size: 0.85em;
+  transition: transform 0.2s ease;
+}
+.collapsible-body {
+  overflow: hidden;
+  max-height: 0;
+  transition: max-height 0.25s ease;
+}
+.collapsible.expanded .collapsible-chevron { transform: rotate(180deg); }
+.collapsible.expanded .collapsible-body { max-height: none; }
+</style>
+<script>
+function toggleCollapsible(headerEl) {
+  var card = headerEl.closest('.collapsible');
+  if (!card) return;
+  var body = card.querySelector('.collapsible-body');
+  var isExpanded = card.classList.contains('expanded');
+  if (isExpanded) {
+    card.classList.remove('expanded');
+    body.style.maxHeight = '0px';
+  } else {
+    card.classList.add('expanded');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    setTimeout(function() {
+      if (card.classList.contains('expanded')) body.style.maxHeight = 'none';
+    }, 260);
+  }
+}
+</script>
+</head>
+<body>
+<h1>WNBA Daily Probabilities</h1>
+
+<p class="updated">Generated 07 Aug 26 01:26</p>
+<p class="disclaimer">Estimates only, NOT guarantees — verify starters and lines yourself before betting.</p>
+
+<div class="tab-nav">
+  <button class="tab-card active" data-tab="tab-builders" onclick="showTab('tab-builders', this)">
+    <span class="tab-card-title">Bet Builders</span>
+    <span class="tab-card-sub">Same-game parlay picks</span>
+  </button>
+  <button class="tab-card" data-tab="tab-toppicks" onclick="showTab('tab-toppicks', this)">
+    <span class="tab-card-title">Top Picks</span>
+    <span class="tab-card-sub">Points, rebounds, assists, 3PM trends</span>
+  </button>
+  <button class="tab-card" data-tab="tab-everything" onclick="showTab('tab-everything', this)">
+    <span class="tab-card-title">All Games</span>
+    <span class="tab-card-sub">Spreads &amp; full prop breakdowns</span>
+  </button>
+</div>
+
+<div id="tab-builders" class="tab-panel active">
+
+    <section class="top-picks">
+      <h2 class="top-picks-title">Today's Bet Builders</h2>
+      
+      <div class="bed-builder-group collapsible">
+        <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+          <h3 class="bed-builder-label">Bet Builder: Las Vegas Aces @ Indiana Fever</h3>
+          <span class="collapsible-chevron">&#9660;</span>
+        </div>
+        <div class="collapsible-body">
+        <div class="pick-grid">
+          
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Chelsea Gray </p>
+            <p class="pick-line">14+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 14+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Kelsey Mitchell </p>
+            <p class="pick-line">17+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 17+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Kelsey Mitchell </p>
+            <p class="pick-line">22+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 22+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">A'ja Wilson </p>
+            <p class="pick-line">16+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 16+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">A'ja Wilson </p>
+            <p class="pick-line">26+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 26+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Chelsea Gray </p>
+            <p class="pick-line">7+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 7+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Aliyah Boston </p>
+            <p class="pick-line">9+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 9+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Caitlin Clark </p>
+            <p class="pick-line">22+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 22+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">NaLyssa Smith </p>
+            <p class="pick-line">8+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 8+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">NaLyssa Smith </p>
+            <p class="pick-line">14+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 14+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Jackie Young </p>
+            <p class="pick-line">11+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 11+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Jackie Young </p>
+            <p class="pick-line">19+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 19+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Aliyah Boston </p>
+            <p class="pick-line">5+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 5+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Aliyah Boston </p>
+            <p class="pick-line">17+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 17+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Kelsey Mitchell <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 9 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">NaLyssa Smith <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Jackie Young <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">A'ja Wilson <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">A'ja Wilson <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Chelsea Gray <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">6+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 6+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Chelsea Gray <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Monique Billings <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">4+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 4+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Kelsey Mitchell <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">2+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 2+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+        </div>
+        </div>
+      </div>
+      <div class="bed-builder-group collapsible">
+        <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+          <h3 class="bed-builder-label">Bet Builder: Los Angeles Sparks @ Minnesota Lynx</h3>
+          <span class="collapsible-chevron">&#9660;</span>
+        </div>
+        <div class="collapsible-body">
+        <div class="pick-grid">
+          
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Nneka Ogwumike </p>
+            <p class="pick-line">10+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 10+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Nneka Ogwumike </p>
+            <p class="pick-line">20+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Ariel Atkins </p>
+            <p class="pick-line">6+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Natasha Howard </p>
+            <p class="pick-line">6+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 6+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Napheesa Collier </p>
+            <p class="pick-line">10+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 4 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Napheesa Collier </p>
+            <p class="pick-line">18+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 4 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">Spread</span>
+              <span class="pick-prob">99%</span>
+            </div>
+            <p class="pick-player">Minnesota Lynx </p>
+            <p class="pick-line">+3.5 spread</p>
+            <ul class="pick-reasons"><li>model favors Minnesota Lynx to cover +3.5 today</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Dearica Hamby </p>
+            <p class="pick-line">11+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 11+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Erica Wheeler </p>
+            <p class="pick-line">7+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Erica Wheeler </p>
+            <p class="pick-line">14+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Ariel Atkins </p>
+            <p class="pick-line">13+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Rae Burrell </p>
+            <p class="pick-line">15+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 15+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Natasha Howard </p>
+            <p class="pick-line">14+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 14+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Olivia Miles </p>
+            <p class="pick-line">13+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 13+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Olivia Miles </p>
+            <p class="pick-line">22+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 22+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Nneka Ogwumike </p>
+            <p class="pick-line">6+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 6+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Rae Burrell </p>
+            <p class="pick-line">11+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 11+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Kayla McBride </p>
+            <p class="pick-line">15+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Kayla McBride </p>
+            <p class="pick-line">19+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Courtney Williams </p>
+            <p class="pick-line">8+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 8+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Courtney Williams </p>
+            <p class="pick-line">14+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 14+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Olivia Miles </p>
+            <p class="pick-line">5+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Napheesa Collier <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">5+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 4 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 2 of her last 4 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Olivia Miles <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Dearica Hamby <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">5+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 4 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 5+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Dearica Hamby <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">2+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 2+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Ariel Atkins <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Rae Burrell <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Courtney Williams <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Nneka Ogwumike <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Erica Wheeler <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 7 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Ariel Atkins <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Rae Burrell <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Natasha Howard <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Courtney Williams <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Olivia Miles <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+        </div>
+        </div>
+      </div>
+      <div class="bed-builder-group collapsible">
+        <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+          <h3 class="bed-builder-label">Bet Builder: Toronto Tempo @ Portland Fire</h3>
+          <span class="collapsible-chevron">&#9660;</span>
+        </div>
+        <div class="collapsible-body">
+        <div class="pick-grid">
+          
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Carla Leite </p>
+            <p class="pick-line">10+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 10+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Marina Mabrey </p>
+            <p class="pick-line">19+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 19+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Bridget Carleton </p>
+            <p class="pick-line">16+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 16+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Emily Engstler </p>
+            <p class="pick-line">12+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 12+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Megan DiLeo </p>
+            <p class="pick-line">9+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 9+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Megan DiLeo </p>
+            <p class="pick-line">13+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 13+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Carla Leite </p>
+            <p class="pick-line">18+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 18+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Maria Conde </p>
+            <p class="pick-line">6+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 6+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Maria Conde </p>
+            <p class="pick-line">12+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 12+ PRA in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Nyara Sabally </p>
+            <p class="pick-line">7+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 7+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Laura Juskaite </p>
+            <p class="pick-line">7+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Laura Juskaite </p>
+            <p class="pick-line">12+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Marina Mabrey </p>
+            <p class="pick-line">12+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 12+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PRA</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Julie Allemand </p>
+            <p class="pick-line">13+ PRA</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li></ul>
+          </div>
+          <div class="pick-card">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Bridget Carleton </p>
+            <p class="pick-line">10+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>usually clears this with real room to spare, not just barely</li><li>also hit 10+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Bridget Carleton <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">PTS</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Emily Engstler <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">6+ PTS</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 4 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 6+ PTS in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">100%</span>
+            </div>
+            <p class="pick-player">Megan DiLeo <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 100% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 9 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Laura Juskaite <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 9 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">90%</span>
+            </div>
+            <p class="pick-player">Bridget Carleton <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">2+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 90% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 9 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 2+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">REB</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Maria Conde <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ REB</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ REB in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Maria Conde <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Laura Juskaite <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Marina Mabrey <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">3+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 3+ AST in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Marina Mabrey <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 6 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Julie Allemand <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">5+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Julie Allemand <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">AST</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Emily Engstler <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">2+ AST</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 5 of her last 10 games - one slightly-worse game and this misses</li></ul>
+          </div>
+          <div class="pick-card pick-card-thin">
+            <div class="pick-card-top">
+              <span class="pick-type">3PM</span>
+              <span class="pick-prob">80%</span>
+            </div>
+            <p class="pick-player">Emily Engstler <span class="thin-margin-badge">THIN MARGIN</span></p>
+            <p class="pick-line">1+ 3PM</p>
+            <ul class="pick-reasons"><li>hit this mark in 80% of her last 10 games</li><li>THIN MARGIN: she barely cleared this mark (within 2) in 8 of her last 10 games - one slightly-worse game and this misses</li><li>also hit 1+ 3PM in her last meeting vs this opponent</li></ul>
+          </div>
+        </div>
+        </div>
+      </div>
+    </section>
+</div>
+
+<div id="tab-toppicks" class="tab-panel">
+
+    <section class="top-performers">
+      <h2 class="tp-heading">Today's Top Points Performers</h2>
+      <p class="tp-subheading">Points is the only stat with opponent-defense data behind it, so this list weighs 4 things: her own hit rate on a medium-difficulty line, whether she hit it in her last head-to-head vs this opponent, whether the opponent has recently been allowing more points than usual, and whether the opponent ranks weak defensively over their last 10 games.</p>
+      <div class="tp-grid">
+        
+        <div class="tp-card collapsible">
+          <div class="tp-rank">1</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Emily Engstler <span class="tp-team">Portland Fire</span></p>
+                <p class="tp-matchup">vs Toronto Tempo</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">6+ Points</span>
+                  <span class="tp-hit-rate">100% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 6+ points in her last meeting vs Toronto Tempo</li><li>Toronto Tempo has allowed 8% more points than their season average over their last 5 games</li><li>Toronto Tempo ranks #15 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">2</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Kelsey Mitchell <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">20+ Points</span>
+                  <span class="tp-hit-rate">100% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 20+ points in her last 2 meetings vs Las Vegas Aces</li><li>Las Vegas Aces has allowed 4% more points than their season average over their last 5 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">3</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">A'ja Wilson <span class="tp-team">Las Vegas Aces</span></p>
+                <p class="tp-matchup">vs Indiana Fever</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">19+ Points</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 19+ points in her last meeting vs Indiana Fever</li><li>Indiana Fever has allowed 6% more points than their season average over their last 5 games</li><li>Indiana Fever ranks #11 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">4</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Ariel Atkins <span class="tp-team">Los Angeles Sparks</span></p>
+                <p class="tp-matchup">vs Minnesota Lynx</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">8+ Points</span>
+                  <span class="tp-hit-rate">100% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>Minnesota Lynx has allowed 8% more points than their season average over their last 5 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">5</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Natasha Howard <span class="tp-team">Minnesota Lynx</span></p>
+                <p class="tp-matchup">vs Los Angeles Sparks</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">8+ Points</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 8+ points in her last 2 meetings vs Los Angeles Sparks</li><li>Los Angeles Sparks has allowed 5% more points than their season average over their last 5 games</li><li>Los Angeles Sparks ranks #12 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">6</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Carla Leite <span class="tp-team">Portland Fire</span></p>
+                <p class="tp-matchup">vs Toronto Tempo</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">12+ Points</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 12+ points in her last meeting vs Toronto Tempo</li><li>Toronto Tempo has allowed 8% more points than their season average over their last 5 games</li><li>Toronto Tempo ranks #15 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">7</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Aliyah Boston <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">11+ Points</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 11+ points in her last 2 meetings vs Las Vegas Aces</li><li>Las Vegas Aces has allowed 4% more points than their season average over their last 5 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">8</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Chelsea Gray <span class="tp-team">Las Vegas Aces</span></p>
+                <p class="tp-matchup">vs Indiana Fever</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">9+ Points</span>
+                  <span class="tp-hit-rate">80% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 9+ points in her last 2 meetings vs Indiana Fever</li><li>Indiana Fever has allowed 6% more points than their season average over their last 5 games</li><li>Indiana Fever ranks #11 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">9</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Jackie Young <span class="tp-team">Las Vegas Aces</span></p>
+                <p class="tp-matchup">vs Indiana Fever</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">13+ Points</span>
+                  <span class="tp-hit-rate">80% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>hit 13+ points in her last 2 meetings vs Indiana Fever</li><li>Indiana Fever has allowed 6% more points than their season average over their last 5 games</li><li>Indiana Fever ranks #11 of 15 in defense over the last 10 games</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">10</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Erica Wheeler <span class="tp-team">Los Angeles Sparks</span></p>
+                <p class="tp-matchup">vs Minnesota Lynx</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">9+ Points</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <ul class="tp-reasons"><li>Minnesota Lynx has allowed 8% more points than their season average over their last 5 games</li></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="top-performers">
+      <h2 class="tp-heading">Today's Top Rebounds/Assists/PRA/3PM Trends</h2>
+      <p class="tp-subheading">Rebounds, assists, and PRA (points+rebounds+assists combined) now factor in how many of these the opponent has actually been allowing lately, plus whether her own team's offense is trending up - not just her own hit rate. Threes still only uses her own hit rate and head-to-head, since there's no reliable opponent-allowed-threes signal being tracked yet.</p>
+      <div class="tp-grid">
+        
+        <div class="tp-card collapsible">
+          <div class="tp-rank">1</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Kelsey Mitchell <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">25+ PRA</span>
+                  <span class="tp-hit-rate">100% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Las Vegas Aces has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Indiana Fever has scored 13% more than their season average over their last 5 games</li><li>hit 25+ PRA in her last 2 meetings vs Las Vegas Aces</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">2</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Bridget Carleton <span class="tp-team">Portland Fire</span></p>
+                <p class="tp-matchup">vs Toronto Tempo</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">18+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Toronto Tempo has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Portland Fire has scored 10% more than their season average over their last 5 games</li><li>hit 18+ PRA in her last meeting vs Toronto Tempo</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">3</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Carla Leite <span class="tp-team">Portland Fire</span></p>
+                <p class="tp-matchup">vs Toronto Tempo</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">20+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Toronto Tempo has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Portland Fire has scored 10% more than their season average over their last 5 games</li><li>hit 20+ PRA in her last meeting vs Toronto Tempo</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">4</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">A'ja Wilson <span class="tp-team">Las Vegas Aces</span></p>
+                <p class="tp-matchup">vs Indiana Fever</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">30+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Indiana Fever has been allowing 0.0 reb and 0.0 ast per game lately</li><li>hit 30+ PRA in her last meeting vs Indiana Fever</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">5</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Chelsea Gray <span class="tp-team">Las Vegas Aces</span></p>
+                <p class="tp-matchup">vs Indiana Fever</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">16+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Indiana Fever has been allowing 0.0 reb and 0.0 ast per game lately</li><li>hit 16+ PRA in her last 2 meetings vs Indiana Fever</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">6</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Natasha Howard <span class="tp-team">Minnesota Lynx</span></p>
+                <p class="tp-matchup">vs Los Angeles Sparks</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">16+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Los Angeles Sparks has been allowing 0.0 reb and 0.0 ast per game lately</li><li>hit 16+ PRA in her last 2 meetings vs Los Angeles Sparks</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">7</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Marina Mabrey <span class="tp-team">Toronto Tempo</span></p>
+                <p class="tp-matchup">vs Portland Fire</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">21+ PRA</span>
+                  <span class="tp-hit-rate">90% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Portland Fire has been allowing 0.0 reb and 0.0 ast per game lately</li><li>hit 21+ PRA in her last meeting vs Portland Fire</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">8</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Monique Billings <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">5+ REB</span>
+                  <span class="tp-hit-rate">80% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Las Vegas Aces has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Indiana Fever has scored 13% more than their season average over their last 5 games</li><li>hit 5+ REB in her last 2 meetings vs Las Vegas Aces</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">9</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Aliyah Boston <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">19+ PRA</span>
+                  <span class="tp-hit-rate">80% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Las Vegas Aces has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Indiana Fever has scored 13% more than their season average over their last 5 games</li><li>hit 19+ PRA in her last 2 meetings vs Las Vegas Aces</li></ul>
+            </div>
+          </div>
+        </div>
+        <div class="tp-card collapsible">
+          <div class="tp-rank">10</div>
+          <div class="tp-body">
+            <div class="collapsible-toggle" onclick="toggleCollapsible(this)">
+              <div>
+                <p class="tp-name">Caitlin Clark <span class="tp-team">Indiana Fever</span></p>
+                <p class="tp-matchup">vs Las Vegas Aces</p>
+                <div class="tp-stat-row">
+                  <span class="tp-stat-badge">25+ PRA</span>
+                  <span class="tp-hit-rate">80% <span class="tp-hit-rate-label">hit rate</span></span>
+                  <span class="tp-games">last 10 games</span>
+                </div>
+              </div>
+              <span class="collapsible-chevron">&#9660;</span>
+            </div>
+            <div class="collapsible-body">
+              <span class="boost-tag">&#9733; matches recent vs opponent</span>
+              <ul class="tp-reasons"><li>Las Vegas Aces has been allowing 0.0 reb and 0.0 ast per game lately</li><li>Indiana Fever has scored 13% more than their season average over their last 5 games</li><li>hit 25+ PRA in her last meeting vs Las Vegas Aces</li></ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+</div>
+
+<div id="tab-everything" class="tab-panel">
+<section class="matchup-card collapsible"><div class="matchup-header collapsible-toggle" onclick="toggleCollapsible(this)"><div><div class="court-line"></div><h2>Las Vegas Aces <span class="at-sign">@</span> Indiana Fever</h2><p class="rest-line">LV rest 1d &middot; IND rest 1d</p></div><span class="collapsible-chevron">&#9660;</span></div><div class="collapsible-body"><ul class="matchup-facts"><li>Las Vegas Aces was #4 in offense and #4 in defense out of 15 teams in the league, over the last 10 games.</li><li>Las Vegas Aces scored 90.4 and allowed 87.5 points per game at home this season (15 games).</li><li>Las Vegas Aces scored 92.6 and allowed 86.6 points per game on the road this season (18 games).</li><li>Indiana Fever was #1 in offense and #11 in defense out of 15 teams in the league, over the last 10 games.</li><li>Indiana Fever scored 99.6 and allowed 89.9 points per game at home this season (18 games).</li><li>Indiana Fever scored 93.1 and allowed 89.7 points per game on the road this season (15 games).</li></ul><h3 class="section-label">Spread Cover</h3><div class="spread-block"><div class="spread-row-group"><span class="spread-num">-3.5</span><div class="pbar-row">
+        <span class="pbar-label">LV</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:30%; background:var(--teal);"></div></div>
+        <span class="pbar-value">30%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">IND</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:45%; background:var(--orange);"></div></div>
+        <span class="pbar-value">45%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">-1.5</span><div class="pbar-row">
+        <span class="pbar-label">LV</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:37%; background:var(--teal);"></div></div>
+        <span class="pbar-value">37%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">IND</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:53%; background:var(--orange);"></div></div>
+        <span class="pbar-value">53%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+1.5</span><div class="pbar-row">
+        <span class="pbar-label">LV</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:47%; background:var(--teal);"></div></div>
+        <span class="pbar-value">47%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">IND</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:63%; background:var(--orange);"></div></div>
+        <span class="pbar-value">63%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+3.5</span><div class="pbar-row">
+        <span class="pbar-label">LV</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:55%; background:var(--teal);"></div></div>
+        <span class="pbar-value">55%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">IND</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:70%; background:var(--orange);"></div></div>
+        <span class="pbar-value">70%</span>
+    </div></div></div><h3 class="section-label">Starter Prop Floors</h3><div class="team-group"><p class="team-sublabel">LV</p><div class="player-block"><p class="player-name">Stephanie Talbot <span class="player-team">(Las Vegas Aces)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-warm">3+ &middot; 40%</span><span class="pill pill-cool">5+ &middot; 20%</span><span class="pill pill-cool">7+ &middot; 10%</span><span class="pill pill-cool">9+ &middot; 0%</span><span class="pill pill-cool">11+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-cool">3+ &middot; 20%</span><span class="pill pill-cool">4+ &middot; 20%</span><span class="pill pill-cool">5+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 70%</span><span class="pill pill-cool">2+ &middot; 10%</span><span class="pill pill-cool">3+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 20%</span><span class="pill pill-cool">2+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-cool">8+ &middot; 30%</span><span class="pill pill-cool">10+ &middot; 20%</span><span class="pill pill-cool">12+ &middot; 20%</span><span class="pill pill-cool">14+ &middot; 0%</span><span class="pill pill-cool">16+ &middot; 0%</span></div></div><p class="vs-opp-line">Indiana Fever allowed 95.4 points per game on average over their last 5 games (season avg 89.8, +6%)</p><p class="vs-opp-line">Indiana Fever ranks #11 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 0p/2r/1a/03pm &middot; 05 Jul 26: 7p/4r/1a/13pm</p><p class="vs-opp-line">Las Vegas Aces scored 98.6 points per game on average over their last 5 games (season avg 91.6, +8%)</p><p class="vs-opp-line">Points, home/away split: home: 3.8 pts/g (5g) &middot; away: 2.0 pts/g (5g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (8.0 min vs 14.2 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">NaLyssa Smith <span class="player-team">(Las Vegas Aces)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">8+ &middot; 80%</span><span class="pill pill-warm">10+ &middot; 60%</span><span class="pill pill-warm">12+ &middot; 60%</span><span class="pill pill-warm">14+ &middot; 60%</span><span class="pill pill-warm">16+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 90%</span><span class="pill pill-hot">4+ &middot; 70%</span><span class="pill pill-warm">5+ &middot; 50%</span><span class="pill pill-cool">6+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">1+ &middot; 50%</span><span class="pill pill-cool">2+ &middot; 10%</span><span class="pill pill-cool">3+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 0%</span><span class="pill pill-cool">2+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 80%</span><span class="pill pill-hot">16+ &middot; 70%</span><span class="pill pill-warm">18+ &middot; 60%</span><span class="pill pill-warm">20+ &middot; 50%</span><span class="pill pill-warm">22+ &middot; 40%</span></div></div><p class="vs-opp-line">Indiana Fever allowed 95.4 points per game on average over their last 5 games (season avg 89.8, +6%)</p><p class="vs-opp-line">Indiana Fever ranks #11 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 9p/5r/1a/03pm &middot; 05 Jul 26: 9p/10r/1a/03pm</p><p class="vs-opp-line">Las Vegas Aces scored 98.6 points per game on average over their last 5 games (season avg 91.6, +8%)</p><p class="vs-opp-line">Points, home/away split: home: 13.6 pts/g (5g) &middot; away: 14.6 pts/g (5g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (31.0 min vs 23.9 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">A'ja Wilson <span class="player-team">(Las Vegas Aces)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">16+ &middot; 90%</span><span class="pill pill-hot">19+ &middot; 90%</span><span class="pill pill-hot">23+ &middot; 70%</span><span class="pill pill-warm">27+ &middot; 50%</span><span class="pill pill-warm">31+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">7+ &middot; 70%</span><span class="pill pill-warm">8+ &middot; 60%</span><span class="pill pill-warm">10+ &middot; 60%</span><span class="pill pill-warm">12+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-cool">5+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-cool">2+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">26+ &middot; 90%</span><span class="pill pill-hot">30+ &middot; 90%</span><span class="pill pill-hot">35+ &middot; 70%</span><span class="pill pill-warm">40+ &middot; 50%</span><span class="pill pill-warm">45+ &middot; 50%</span></div></div><p class="vs-opp-line">Indiana Fever allowed 95.4 points per game on average over their last 5 games (season avg 89.8, +6%)</p><p class="vs-opp-line">Indiana Fever ranks #11 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 13 Jul 26: 20p/12r/2a/03pm</p><p class="vs-opp-line">Las Vegas Aces scored 98.6 points per game on average over their last 5 games (season avg 91.6, +8%)</p><p class="vs-opp-line">Points, home/away split: home: 25.5 pts/g (4g) &middot; away: 31.0 pts/g (5g)</p></div><div class="player-block"><p class="player-name">Chelsea Gray <span class="player-team">(Las Vegas Aces)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">7+ &middot; 90%</span><span class="pill pill-hot">9+ &middot; 80%</span><span class="pill pill-warm">11+ &middot; 60%</span><span class="pill pill-warm">13+ &middot; 60%</span><span class="pill pill-warm">15+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-warm">3+ &middot; 40%</span><span class="pill pill-cool">4+ &middot; 20%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">6+ &middot; 80%</span><span class="pill pill-warm">7+ &middot; 50%</span><span class="pill pill-cool">9+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 40%</span><span class="pill pill-cool">3+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 100%</span><span class="pill pill-hot">16+ &middot; 90%</span><span class="pill pill-hot">19+ &middot; 70%</span><span class="pill pill-warm">22+ &middot; 60%</span><span class="pill pill-warm">25+ &middot; 40%</span></div></div><p class="vs-opp-line">Indiana Fever allowed 95.4 points per game on average over their last 5 games (season avg 89.8, +6%)</p><p class="vs-opp-line">Indiana Fever ranks #11 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 9p/2r/6a/13pm &middot; 05 Jul 26: 10p/4r/6a/03pm</p><p class="vs-opp-line">Las Vegas Aces scored 98.6 points per game on average over their last 5 games (season avg 91.6, +8%)</p><p class="vs-opp-line">Points, home/away split: home: 13.4 pts/g (5g) &middot; away: 12.6 pts/g (5g)</p></div><div class="player-block"><p class="player-name">Jackie Young <span class="player-team">(Las Vegas Aces)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">11+ &middot; 80%</span><span class="pill pill-hot">13+ &middot; 80%</span><span class="pill pill-hot">16+ &middot; 70%</span><span class="pill pill-warm">19+ &middot; 60%</span><span class="pill pill-warm">22+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">6+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 50%</span><span class="pill pill-warm">9+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 90%</span><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-warm">3+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">19+ &middot; 80%</span><span class="pill pill-hot">22+ &middot; 70%</span><span class="pill pill-hot">26+ &middot; 70%</span><span class="pill pill-warm">30+ &middot; 60%</span><span class="pill pill-warm">34+ &middot; 60%</span></div></div><p class="vs-opp-line">Indiana Fever allowed 95.4 points per game on average over their last 5 games (season avg 89.8, +6%)</p><p class="vs-opp-line">Indiana Fever ranks #11 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 15p/1r/3a/13pm &middot; 05 Jul 26: 15p/2r/4a/13pm</p><p class="vs-opp-line">Las Vegas Aces scored 98.6 points per game on average over their last 5 games (season avg 91.6, +8%)</p><p class="vs-opp-line">Points, home/away split: home: 19.2 pts/g (4g) &middot; away: 22.6 pts/g (5g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (34.0 min vs 28.7 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div></div><div class="team-group"><p class="team-sublabel">IND</p><div class="player-block"><p class="player-name">Monique Billings <span class="player-team">(Indiana Fever)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 90%</span><span class="pill pill-warm">5+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 60%</span><span class="pill pill-warm">9+ &middot; 60%</span><span class="pill pill-warm">11+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">4+ &middot; 80%</span><span class="pill pill-hot">5+ &middot; 80%</span><span class="pill pill-warm">6+ &middot; 40%</span><span class="pill pill-cool">7+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-cool">3+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 10%</span><span class="pill pill-cool">2+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">11+ &middot; 90%</span><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-warm">15+ &middot; 60%</span><span class="pill pill-warm">17+ &middot; 50%</span><span class="pill pill-warm">19+ &middot; 40%</span></div></div><p class="vs-opp-line">Las Vegas Aces allowed 90.6 points per game on average over their last 5 games (season avg 87.0, +4%)</p><p class="vs-opp-line">Las Vegas Aces ranks #4 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 10p/5r/0a/13pm &middot; 05 Jul 26: 6p/6r/2a/03pm</p><div class="flag-chip flag-chip-inline">&#9888; Indiana Fever scored 109.6 points per game on average over their last 5 games (season avg 96.6, +13%)</div><p class="vs-opp-line">Points, home/away split: home: 9.0 pts/g (4g) &middot; away: 9.0 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Aliyah Boston <span class="player-team">(Indiana Fever)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">9+ &middot; 90%</span><span class="pill pill-hot">11+ &middot; 90%</span><span class="pill pill-hot">13+ &middot; 80%</span><span class="pill pill-hot">15+ &middot; 70%</span><span class="pill pill-warm">17+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 80%</span><span class="pill pill-hot">6+ &middot; 80%</span><span class="pill pill-hot">7+ &middot; 70%</span><span class="pill pill-warm">8+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-warm">4+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 70%</span><span class="pill pill-cool">2+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">17+ &middot; 80%</span><span class="pill pill-hot">19+ &middot; 80%</span><span class="pill pill-hot">22+ &middot; 80%</span><span class="pill pill-hot">25+ &middot; 70%</span><span class="pill pill-warm">28+ &middot; 60%</span></div></div><p class="vs-opp-line">Las Vegas Aces allowed 90.6 points per game on average over their last 5 games (season avg 87.0, +4%)</p><p class="vs-opp-line">Las Vegas Aces ranks #4 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 19p/11r/4a/13pm &middot; 05 Jul 26: 18p/10r/1a/33pm</p><div class="flag-chip flag-chip-inline">&#9888; Indiana Fever scored 109.6 points per game on average over their last 5 games (season avg 96.6, +13%)</div><p class="vs-opp-line">Points, home/away split: home: 17.3 pts/g (3g) &middot; away: 16.3 pts/g (6g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (33.0 min vs 23.7 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Kelsey Mitchell <span class="player-team">(Indiana Fever)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">17+ &middot; 100%</span><span class="pill pill-hot">20+ &middot; 100%</span><span class="pill pill-hot">24+ &middot; 80%</span><span class="pill pill-warm">28+ &middot; 60%</span><span class="pill pill-cool">32+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-cool">3+ &middot; 30%</span><span class="pill pill-cool">4+ &middot; 20%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 40%</span><span class="pill pill-cool">4+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 100%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">22+ &middot; 100%</span><span class="pill pill-hot">25+ &middot; 100%</span><span class="pill pill-hot">29+ &middot; 80%</span><span class="pill pill-warm">33+ &middot; 50%</span><span class="pill pill-cool">37+ &middot; 20%</span></div></div><p class="vs-opp-line">Las Vegas Aces allowed 90.6 points per game on average over their last 5 games (season avg 87.0, +4%)</p><p class="vs-opp-line">Las Vegas Aces ranks #4 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 27p/3r/3a/33pm &middot; 05 Jul 26: 27p/2r/3a/33pm</p><div class="flag-chip flag-chip-inline">&#9888; Indiana Fever scored 109.6 points per game on average over their last 5 games (season avg 96.6, +13%)</div><p class="vs-opp-line">Points, home/away split: home: 26.5 pts/g (4g) &middot; away: 29.4 pts/g (5g)</p></div><div class="player-block"><p class="player-name">Lexie Hull <span class="player-team">(Indiana Fever)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 50%</span><span class="pill pill-warm">7+ &middot; 40%</span><span class="pill pill-cool">9+ &middot; 20%</span><span class="pill pill-cool">11+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-cool">3+ &middot; 20%</span><span class="pill pill-cool">4+ &middot; 0%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">1+ &middot; 40%</span><span class="pill pill-cool">2+ &middot; 10%</span><span class="pill pill-cool">3+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-warm">1+ &middot; 60%</span><span class="pill pill-cool">2+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-warm">8+ &middot; 50%</span><span class="pill pill-warm">10+ &middot; 40%</span><span class="pill pill-cool">12+ &middot; 30%</span><span class="pill pill-cool">14+ &middot; 10%</span><span class="pill pill-cool">16+ &middot; 10%</span></div></div><p class="vs-opp-line">Las Vegas Aces allowed 90.6 points per game on average over their last 5 games (season avg 87.0, +4%)</p><p class="vs-opp-line">Las Vegas Aces ranks #4 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 13 Jul 26: 0p/2r/0a/03pm &middot; 05 Jul 26: 10p/4r/1a/03pm</p><div class="flag-chip flag-chip-inline">&#9888; Indiana Fever scored 109.6 points per game on average over their last 5 games (season avg 96.6, +13%)</div><p class="vs-opp-line">Points, home/away split: home: 5.0 pts/g (4g) &middot; away: 5.5 pts/g (6g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (14.0 min vs 18.9 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">Caitlin Clark <span class="player-team">(Indiana Fever)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 70%</span><span class="pill pill-hot">16+ &middot; 70%</span><span class="pill pill-warm">19+ &middot; 50%</span><span class="pill pill-warm">22+ &middot; 40%</span><span class="pill pill-warm">25+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">7+ &middot; 60%</span><span class="pill pill-warm">8+ &middot; 40%</span><span class="pill pill-warm">10+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-warm">3+ &middot; 40%</span><span class="pill pill-warm">4+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">22+ &middot; 90%</span><span class="pill pill-hot">25+ &middot; 80%</span><span class="pill pill-warm">29+ &middot; 50%</span><span class="pill pill-warm">33+ &middot; 40%</span><span class="pill pill-warm">37+ &middot; 40%</span></div></div><p class="vs-opp-line">Las Vegas Aces allowed 90.6 points per game on average over their last 5 games (season avg 87.0, +4%)</p><p class="vs-opp-line">Las Vegas Aces ranks #4 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 13 Jul 26: 12p/7r/6a/13pm</p><div class="flag-chip flag-chip-inline">&#9888; Indiana Fever scored 109.6 points per game on average over their last 5 games (season avg 96.6, +13%)</div><p class="vs-opp-line">Points, home/away split: home: 25.5 pts/g (4g) &middot; away: 19.6 pts/g (5g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (34.0 min vs 26.2 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div></div></div></section><section class="matchup-card collapsible"><div class="matchup-header collapsible-toggle" onclick="toggleCollapsible(this)"><div><div class="court-line"></div><h2>Los Angeles Sparks <span class="at-sign">@</span> Minnesota Lynx</h2><p class="rest-line">LA rest 1d &middot; MIN rest 5d</p></div><span class="collapsible-chevron">&#9660;</span></div><div class="collapsible-body"><ul class="matchup-facts"><li>Los Angeles Sparks was #5 in offense and #12 in defense out of 15 teams in the league, over the last 10 games.</li><li>Los Angeles Sparks scored 89.2 and allowed 91.1 points per game at home this season (15 games).</li><li>Los Angeles Sparks scored 89.6 and allowed 94.2 points per game on the road this season (16 games).</li><li>Minnesota Lynx was #2 in offense and #6 in defense out of 15 teams in the league, over the last 10 games.</li><li>Minnesota Lynx scored 93.1 and allowed 83.8 points per game at home this season (18 games).</li><li>Minnesota Lynx scored 89.8 and allowed 80.4 points per game on the road this season (16 games).</li></ul><h3 class="section-label">Spread Cover</h3><div class="spread-block"><div class="spread-row-group"><span class="spread-num">-3.5</span><div class="pbar-row">
+        <span class="pbar-label">LA</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:1%; background:var(--teal);"></div></div>
+        <span class="pbar-value">1%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">MIN</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:86%; background:var(--orange);"></div></div>
+        <span class="pbar-value">86%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">-1.5</span><div class="pbar-row">
+        <span class="pbar-label">LA</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:4%; background:var(--teal);"></div></div>
+        <span class="pbar-value">4%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">MIN</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:90%; background:var(--orange);"></div></div>
+        <span class="pbar-value">90%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+1.5</span><div class="pbar-row">
+        <span class="pbar-label">LA</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:10%; background:var(--teal);"></div></div>
+        <span class="pbar-value">10%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">MIN</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:96%; background:var(--orange);"></div></div>
+        <span class="pbar-value">96%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+3.5</span><div class="pbar-row">
+        <span class="pbar-label">LA</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:14%; background:var(--teal);"></div></div>
+        <span class="pbar-value">14%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">MIN</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:99%; background:var(--orange);"></div></div>
+        <span class="pbar-value">99%</span>
+    </div></div></div><h3 class="section-label">Starter Prop Floors</h3><div class="team-group"><p class="team-sublabel">LA</p><div class="player-block"><p class="player-name">Nneka Ogwumike <span class="player-team">(Los Angeles Sparks)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">10+ &middot; 100%</span><span class="pill pill-hot">12+ &middot; 80%</span><span class="pill pill-hot">15+ &middot; 70%</span><span class="pill pill-warm">18+ &middot; 60%</span><span class="pill pill-warm">21+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">6+ &middot; 80%</span><span class="pill pill-hot">7+ &middot; 80%</span><span class="pill pill-hot">9+ &middot; 70%</span><span class="pill pill-warm">11+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-warm">5+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 70%</span><span class="pill pill-warm">2+ &middot; 60%</span><span class="pill pill-warm">3+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">20+ &middot; 100%</span><span class="pill pill-hot">23+ &middot; 90%</span><span class="pill pill-hot">27+ &middot; 80%</span><span class="pill pill-warm">31+ &middot; 50%</span><span class="pill pill-cool">35+ &middot; 20%</span></div></div><p class="vs-opp-line">Minnesota Lynx allowed 88.6 points per game on average over their last 5 games (season avg 82.2, +8%)</p><p class="vs-opp-line">Minnesota Lynx ranks #6 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 23p/12r/5a/23pm &middot; 18 Jun 26: 10p/8r/1a/03pm</p><p class="vs-opp-line">Los Angeles Sparks scored 93.4 points per game on average over their last 5 games (season avg 89.4, +4%)</p><p class="vs-opp-line">Points, home/away split: home: 19.7 pts/g (3g) &middot; away: 18.2 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Dearica Hamby <span class="player-team">(Los Angeles Sparks)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">11+ &middot; 90%</span><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-hot">15+ &middot; 70%</span><span class="pill pill-warm">17+ &middot; 60%</span><span class="pill pill-cool">19+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 90%</span><span class="pill pill-hot">6+ &middot; 70%</span><span class="pill pill-warm">8+ &middot; 50%</span><span class="pill pill-cool">10+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">4+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 20%</span><span class="pill pill-cool">2+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">20+ &middot; 70%</span><span class="pill pill-hot">22+ &middot; 70%</span><span class="pill pill-warm">25+ &middot; 60%</span><span class="pill pill-warm">28+ &middot; 40%</span><span class="pill pill-warm">31+ &middot; 40%</span></div></div><p class="vs-opp-line">Minnesota Lynx allowed 88.6 points per game on average over their last 5 games (season avg 82.2, +8%)</p><p class="vs-opp-line">Minnesota Lynx ranks #6 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 10p/8r/1a/03pm &middot; 18 Jun 26: 12p/9r/2a/13pm</p><p class="vs-opp-line">Los Angeles Sparks scored 93.4 points per game on average over their last 5 games (season avg 89.4, +4%)</p><p class="vs-opp-line">Points, home/away split: home: 17.0 pts/g (4g) &middot; away: 16.8 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Erica Wheeler <span class="player-team">(Los Angeles Sparks)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">7+ &middot; 90%</span><span class="pill pill-hot">9+ &middot; 90%</span><span class="pill pill-hot">11+ &middot; 70%</span><span class="pill pill-warm">13+ &middot; 50%</span><span class="pill pill-cool">15+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 40%</span><span class="pill pill-cool">4+ &middot; 20%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 70%</span><span class="pill pill-warm">6+ &middot; 60%</span><span class="pill pill-warm">8+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 60%</span><span class="pill pill-cool">3+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 90%</span><span class="pill pill-hot">16+ &middot; 90%</span><span class="pill pill-hot">19+ &middot; 80%</span><span class="pill pill-warm">22+ &middot; 60%</span><span class="pill pill-cool">25+ &middot; 30%</span></div></div><p class="vs-opp-line">Minnesota Lynx allowed 88.6 points per game on average over their last 5 games (season avg 82.2, +8%)</p><p class="vs-opp-line">Minnesota Lynx ranks #6 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 10p/2r/6a/23pm &middot; 18 Jun 26: 6p/1r/4a/03pm</p><p class="vs-opp-line">Los Angeles Sparks scored 93.4 points per game on average over their last 5 games (season avg 89.4, +4%)</p><p class="vs-opp-line">Points, home/away split: home: 12.2 pts/g (4g) &middot; away: 13.2 pts/g (6g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (24.0 min vs 29.7 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">Ariel Atkins <span class="player-team">(Los Angeles Sparks)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">6+ &middot; 100%</span><span class="pill pill-hot">8+ &middot; 100%</span><span class="pill pill-warm">10+ &middot; 60%</span><span class="pill pill-warm">12+ &middot; 60%</span><span class="pill pill-cool">14+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-cool">4+ &middot; 30%</span><span class="pill pill-cool">5+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 40%</span><span class="pill pill-warm">5+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 90%</span><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-cool">3+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">13+ &middot; 90%</span><span class="pill pill-hot">15+ &middot; 80%</span><span class="pill pill-warm">17+ &middot; 50%</span><span class="pill pill-warm">19+ &middot; 40%</span><span class="pill pill-warm">21+ &middot; 40%</span></div></div><p class="vs-opp-line">Minnesota Lynx allowed 88.6 points per game on average over their last 5 games (season avg 82.2, +8%)</p><p class="vs-opp-line">Minnesota Lynx ranks #6 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 8p/2r/6a/23pm &middot; 18 Jun 26: 4p/1r/3a/03pm</p><p class="vs-opp-line">Los Angeles Sparks scored 93.4 points per game on average over their last 5 games (season avg 89.4, +4%)</p><p class="vs-opp-line">Points, home/away split: home: 15.0 pts/g (4g) &middot; away: 9.8 pts/g (6g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (21.0 min vs 32.6 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">Rae Burrell <span class="player-team">(Los Angeles Sparks)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">11+ &middot; 80%</span><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-warm">15+ &middot; 60%</span><span class="pill pill-warm">17+ &middot; 60%</span><span class="pill pill-warm">19+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-cool">4+ &middot; 20%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-cool">5+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 90%</span><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-cool">3+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">15+ &middot; 90%</span><span class="pill pill-hot">17+ &middot; 80%</span><span class="pill pill-hot">20+ &middot; 70%</span><span class="pill pill-warm">23+ &middot; 50%</span><span class="pill pill-warm">26+ &middot; 40%</span></div></div><p class="vs-opp-line">Minnesota Lynx allowed 88.6 points per game on average over their last 5 games (season avg 82.2, +8%)</p><p class="vs-opp-line">Minnesota Lynx ranks #6 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 24p/4r/2a/23pm &middot; 18 Jun 26: 19p/0r/3a/23pm</p><p class="vs-opp-line">Los Angeles Sparks scored 93.4 points per game on average over their last 5 games (season avg 89.4, +4%)</p><p class="vs-opp-line">Points, home/away split: home: 20.8 pts/g (4g) &middot; away: 14.2 pts/g (6g)</p></div></div><div class="team-group"><p class="team-sublabel">MIN</p><div class="player-block"><p class="player-name">Natasha Howard <span class="player-team">(Minnesota Lynx)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">6+ &middot; 100%</span><span class="pill pill-hot">8+ &middot; 90%</span><span class="pill pill-hot">10+ &middot; 70%</span><span class="pill pill-warm">12+ &middot; 50%</span><span class="pill pill-cool">14+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 70%</span><span class="pill pill-warm">6+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 50%</span><span class="pill pill-warm">8+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 20%</span><span class="pill pill-cool">2+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 90%</span><span class="pill pill-hot">16+ &middot; 90%</span><span class="pill pill-hot">19+ &middot; 90%</span><span class="pill pill-warm">22+ &middot; 60%</span><span class="pill pill-cool">25+ &middot; 30%</span></div></div><p class="vs-opp-line">Los Angeles Sparks allowed 97.0 points per game on average over their last 5 games (season avg 92.7, +5%)</p><p class="vs-opp-line">Los Angeles Sparks ranks #12 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 10p/10r/6a/03pm &middot; 18 Jun 26: 15p/9r/2a/03pm</p><p class="vs-opp-line">Minnesota Lynx scored 100.6 points per game on average over their last 5 games (season avg 91.5, +10%)</p><p class="vs-opp-line">Points, home/away split: home: 13.5 pts/g (6g) &middot; away: 8.7 pts/g (3g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (23.0 min vs 28.2 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">Napheesa Collier <span class="player-team">(Minnesota Lynx)</span> <span class="games-sampled">last 4 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">10+ &middot; 100%</span><span class="pill pill-hot">12+ &middot; 100%</span><span class="pill pill-hot">15+ &middot; 100%</span><span class="pill pill-warm">18+ &middot; 50%</span><span class="pill pill-cool">21+ &middot; 25%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 100%</span><span class="pill pill-hot">6+ &middot; 75%</span><span class="pill pill-warm">7+ &middot; 50%</span><span class="pill pill-warm">8+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 75%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-cool">4+ &middot; 25%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 75%</span><span class="pill pill-hot">2+ &middot; 75%</span><span class="pill pill-cool">3+ &middot; 25%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">18+ &middot; 100%</span><span class="pill pill-hot">21+ &middot; 100%</span><span class="pill pill-warm">25+ &middot; 50%</span><span class="pill pill-warm">29+ &middot; 50%</span><span class="pill pill-warm">33+ &middot; 50%</span></div></div><p class="vs-opp-line">Los Angeles Sparks allowed 97.0 points per game on average over their last 5 games (season avg 92.7, +5%)</p><p class="vs-opp-line">Los Angeles Sparks ranks #12 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line vs-opp-empty">vs opponent: No meetings found vs this opponent this season.</p><p class="vs-opp-line">Minnesota Lynx scored 100.6 points per game on average over their last 5 games (season avg 91.5, +10%)</p><p class="vs-opp-line">Points, home/away split: home: 16.5 pts/g (2g) &middot; away: 20.0 pts/g (2g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (31.0 min vs 23.0 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Kayla McBride <span class="player-team">(Minnesota Lynx)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">15+ &middot; 80%</span><span class="pill pill-hot">17+ &middot; 80%</span><span class="pill pill-hot">20+ &middot; 70%</span><span class="pill pill-warm">23+ &middot; 60%</span><span class="pill pill-cool">26+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-cool">4+ &middot; 30%</span><span class="pill pill-cool">5+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-cool">3+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">19+ &middot; 80%</span><span class="pill pill-hot">21+ &middot; 80%</span><span class="pill pill-hot">24+ &middot; 70%</span><span class="pill pill-warm">27+ &middot; 50%</span><span class="pill pill-warm">30+ &middot; 40%</span></div></div><p class="vs-opp-line">Los Angeles Sparks allowed 97.0 points per game on average over their last 5 games (season avg 92.7, +5%)</p><p class="vs-opp-line">Los Angeles Sparks ranks #12 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 24p/1r/1a/23pm &middot; 18 Jun 26: 14p/4r/0a/23pm</p><p class="vs-opp-line">Minnesota Lynx scored 100.6 points per game on average over their last 5 games (season avg 91.5, +10%)</p><p class="vs-opp-line">Points, home/away split: home: 23.0 pts/g (6g) &middot; away: 22.2 pts/g (4g)</p></div><div class="player-block"><p class="player-name">Courtney Williams <span class="player-team">(Minnesota Lynx)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">8+ &middot; 80%</span><span class="pill pill-hot">10+ &middot; 70%</span><span class="pill pill-hot">12+ &middot; 70%</span><span class="pill pill-warm">14+ &middot; 50%</span><span class="pill pill-warm">16+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 90%</span><span class="pill pill-hot">4+ &middot; 70%</span><span class="pill pill-warm">5+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-cool">2+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">14+ &middot; 80%</span><span class="pill pill-hot">16+ &middot; 80%</span><span class="pill pill-hot">19+ &middot; 70%</span><span class="pill pill-warm">22+ &middot; 60%</span><span class="pill pill-warm">25+ &middot; 40%</span></div></div><p class="vs-opp-line">Los Angeles Sparks allowed 97.0 points per game on average over their last 5 games (season avg 92.7, +5%)</p><p class="vs-opp-line">Los Angeles Sparks ranks #12 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 19p/2r/4a/13pm &middot; 18 Jun 26: 13p/1r/5a/13pm</p><p class="vs-opp-line">Minnesota Lynx scored 100.6 points per game on average over their last 5 games (season avg 91.5, +10%)</p><p class="vs-opp-line">Points, home/away split: home: 14.3 pts/g (6g) &middot; away: 12.3 pts/g (3g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (34.0 min vs 29.0 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Olivia Miles <span class="player-team">(Minnesota Lynx)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">13+ &middot; 90%</span><span class="pill pill-hot">15+ &middot; 70%</span><span class="pill pill-warm">18+ &middot; 60%</span><span class="pill pill-warm">21+ &middot; 50%</span><span class="pill pill-warm">24+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 100%</span><span class="pill pill-hot">4+ &middot; 70%</span><span class="pill pill-warm">5+ &middot; 40%</span><span class="pill pill-cool">6+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 80%</span><span class="pill pill-hot">6+ &middot; 70%</span><span class="pill pill-warm">8+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-warm">3+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">22+ &middot; 90%</span><span class="pill pill-hot">25+ &middot; 80%</span><span class="pill pill-warm">29+ &middot; 60%</span><span class="pill pill-warm">33+ &middot; 40%</span><span class="pill pill-warm">37+ &middot; 40%</span></div></div><p class="vs-opp-line">Los Angeles Sparks allowed 97.0 points per game on average over their last 5 games (season avg 92.7, +5%)</p><p class="vs-opp-line">Los Angeles Sparks ranks #12 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 2, &lt;365d): 15 Jul 26: 18p/4r/5a/13pm &middot; 18 Jun 26: 31p/4r/4a/23pm</p><p class="vs-opp-line">Minnesota Lynx scored 100.6 points per game on average over their last 5 games (season avg 91.5, +10%)</p><p class="vs-opp-line">Points, home/away split: home: 23.3 pts/g (6g) &middot; away: 20.3 pts/g (3g)</p></div></div></div></section><section class="matchup-card collapsible"><div class="matchup-header collapsible-toggle" onclick="toggleCollapsible(this)"><div><div class="court-line"></div><h2>Toronto Tempo <span class="at-sign">@</span> Portland Fire</h2><p class="rest-line">TOR rest 2d &middot; POR rest 5d</p></div><span class="collapsible-chevron">&#9660;</span></div><div class="collapsible-body"><ul class="matchup-facts"><li>Toronto Tempo was #13 in offense and #15 in defense out of 15 teams in the league, over the last 10 games.</li><li>Toronto Tempo scored 84.6 and allowed 90.4 points per game at home this season (18 games).</li><li>Toronto Tempo scored 89.1 and allowed 95.5 points per game on the road this season (14 games).</li><li>Portland Fire was #9 in offense and #8 in defense out of 15 teams in the league, over the last 10 games.</li><li>Portland Fire scored 85.8 and allowed 90.9 points per game at home this season (16 games).</li><li>Portland Fire scored 85.6 and allowed 92.8 points per game on the road this season (16 games).</li></ul><h3 class="section-label">Spread Cover</h3><div class="spread-block"><div class="spread-row-group"><span class="spread-num">-3.5</span><div class="pbar-row">
+        <span class="pbar-label">TOR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:32%; background:var(--teal);"></div></div>
+        <span class="pbar-value">32%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">POR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:43%; background:var(--orange);"></div></div>
+        <span class="pbar-value">43%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">-1.5</span><div class="pbar-row">
+        <span class="pbar-label">TOR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:39%; background:var(--teal);"></div></div>
+        <span class="pbar-value">39%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">POR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:50%; background:var(--orange);"></div></div>
+        <span class="pbar-value">50%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+1.5</span><div class="pbar-row">
+        <span class="pbar-label">TOR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:50%; background:var(--teal);"></div></div>
+        <span class="pbar-value">50%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">POR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:61%; background:var(--orange);"></div></div>
+        <span class="pbar-value">61%</span>
+    </div></div><div class="spread-row-group"><span class="spread-num">+3.5</span><div class="pbar-row">
+        <span class="pbar-label">TOR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:57%; background:var(--teal);"></div></div>
+        <span class="pbar-value">57%</span>
+    </div><div class="pbar-row">
+        <span class="pbar-label">POR</span>
+        <div class="pbar-track"><div class="pbar-fill" style="width:68%; background:var(--orange);"></div></div>
+        <span class="pbar-value">68%</span>
+    </div></div></div><h3 class="section-label">Starter Prop Floors</h3><div class="team-group"><p class="team-sublabel">TOR</p><div class="player-block"><p class="player-name">Maria Conde <span class="player-team">(Toronto Tempo)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">6+ &middot; 80%</span><span class="pill pill-hot">8+ &middot; 80%</span><span class="pill pill-hot">10+ &middot; 70%</span><span class="pill pill-warm">12+ &middot; 60%</span><span class="pill pill-warm">14+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 40%</span><span class="pill pill-cool">6+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 50%</span><span class="pill pill-warm">3+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">12+ &middot; 80%</span><span class="pill pill-hot">14+ &middot; 70%</span><span class="pill pill-hot">17+ &middot; 70%</span><span class="pill pill-warm">20+ &middot; 60%</span><span class="pill pill-warm">23+ &middot; 40%</span></div></div><div class="flag-chip flag-chip-inline">&#9888; Portland Fire allowed 103.6 points per game on average over their last 5 games (season avg 91.8, +13%)</div><p class="vs-opp-line">Portland Fire ranks #8 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 8p/5r/1a/13pm</p><p class="vs-opp-line">Toronto Tempo scored 81.6 points per game on average over their last 5 games (season avg 86.6, -6%)</p><p class="vs-opp-line">Points, home/away split: home: 10.1 pts/g (7g) &middot; away: 15.7 pts/g (3g)</p></div><div class="player-block"><p class="player-name">Nyara Sabally <span class="player-team">(Toronto Tempo)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">7+ &middot; 80%</span><span class="pill pill-hot">9+ &middot; 80%</span><span class="pill pill-hot">11+ &middot; 70%</span><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-cool">15+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-hot">4+ &middot; 70%</span><span class="pill pill-warm">5+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-cool">2+ &middot; 30%</span><span class="pill pill-cool">3+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 70%</span><span class="pill pill-warm">2+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-hot">15+ &middot; 70%</span><span class="pill pill-hot">17+ &middot; 70%</span><span class="pill pill-warm">19+ &middot; 60%</span><span class="pill pill-warm">21+ &middot; 40%</span></div></div><div class="flag-chip flag-chip-inline">&#9888; Portland Fire allowed 103.6 points per game on average over their last 5 games (season avg 91.8, +13%)</div><p class="vs-opp-line">Portland Fire ranks #8 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 9p/3r/0a/13pm</p><p class="vs-opp-line">Toronto Tempo scored 81.6 points per game on average over their last 5 games (season avg 86.6, -6%)</p><p class="vs-opp-line">Points, home/away split: home: 10.9 pts/g (8g) &middot; away: 20.0 pts/g (2g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (32.0 min vs 21.4 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Laura Juskaite <span class="player-team">(Toronto Tempo)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">7+ &middot; 80%</span><span class="pill pill-warm">9+ &middot; 60%</span><span class="pill pill-warm">11+ &middot; 60%</span><span class="pill pill-warm">13+ &middot; 50%</span><span class="pill pill-warm">15+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-hot">3+ &middot; 90%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-cool">5+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 90%</span><span class="pill pill-warm">2+ &middot; 40%</span><span class="pill pill-cool">3+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">12+ &middot; 80%</span><span class="pill pill-warm">14+ &middot; 60%</span><span class="pill pill-warm">16+ &middot; 50%</span><span class="pill pill-warm">18+ &middot; 50%</span><span class="pill pill-warm">20+ &middot; 50%</span></div></div><div class="flag-chip flag-chip-inline">&#9888; Portland Fire allowed 103.6 points per game on average over their last 5 games (season avg 91.8, +13%)</div><p class="vs-opp-line">Portland Fire ranks #8 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 3p/2r/1a/03pm</p><p class="vs-opp-line">Toronto Tempo scored 81.6 points per game on average over their last 5 games (season avg 86.6, -6%)</p><p class="vs-opp-line">Points, home/away split: home: 12.6 pts/g (7g) &middot; away: 14.7 pts/g (3g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing less than usual lately (25.0 min vs 29.6 min average) - could be a minor injury, rotation change, or blowout garbage time. Worth checking team news before relying on the floors above, since a reduced role lowers them.</div></div><div class="player-block"><p class="player-name">Marina Mabrey <span class="player-team">(Toronto Tempo)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">12+ &middot; 80%</span><span class="pill pill-hot">14+ &middot; 70%</span><span class="pill pill-warm">17+ &middot; 50%</span><span class="pill pill-warm">20+ &middot; 50%</span><span class="pill pill-warm">23+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">4+ &middot; 40%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 80%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-warm">3+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">19+ &middot; 90%</span><span class="pill pill-hot">21+ &middot; 90%</span><span class="pill pill-warm">24+ &middot; 50%</span><span class="pill pill-warm">27+ &middot; 50%</span><span class="pill pill-warm">30+ &middot; 40%</span></div></div><div class="flag-chip flag-chip-inline">&#9888; Portland Fire allowed 103.6 points per game on average over their last 5 games (season avg 91.8, +13%)</div><p class="vs-opp-line">Portland Fire ranks #8 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 19p/5r/8a/33pm</p><p class="vs-opp-line">Toronto Tempo scored 81.6 points per game on average over their last 5 games (season avg 86.6, -6%)</p><p class="vs-opp-line">Points, home/away split: home: 19.9 pts/g (7g) &middot; away: 18.5 pts/g (2g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (35.0 min vs 29.9 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Julie Allemand <span class="player-team">(Toronto Tempo)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 90%</span><span class="pill pill-warm">5+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 60%</span><span class="pill pill-warm">9+ &middot; 50%</span><span class="pill pill-cool">11+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-warm">4+ &middot; 50%</span><span class="pill pill-warm">5+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">5+ &middot; 80%</span><span class="pill pill-hot">6+ &middot; 80%</span><span class="pill pill-cool">8+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-warm">2+ &middot; 40%</span><span class="pill pill-cool">3+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">11+ &middot; 90%</span><span class="pill pill-hot">13+ &middot; 80%</span><span class="pill pill-hot">15+ &middot; 80%</span><span class="pill pill-warm">17+ &middot; 60%</span><span class="pill pill-warm">19+ &middot; 50%</span></div></div><div class="flag-chip flag-chip-inline">&#9888; Portland Fire allowed 103.6 points per game on average over their last 5 games (season avg 91.8, +13%)</div><p class="vs-opp-line">Portland Fire ranks #8 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line vs-opp-empty">vs opponent: No meetings found vs this opponent this season.</p><p class="vs-opp-line">Toronto Tempo scored 81.6 points per game on average over their last 5 games (season avg 86.6, -6%)</p><p class="vs-opp-line">Points, home/away split: home: 6.1 pts/g (7g) &middot; away: 9.3 pts/g (3g)</p></div></div><div class="team-group"><p class="team-sublabel">POR</p><div class="player-block"><p class="player-name">Bridget Carleton <span class="player-team">(Portland Fire)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">10+ &middot; 80%</span><span class="pill pill-hot">12+ &middot; 80%</span><span class="pill pill-warm">14+ &middot; 50%</span><span class="pill pill-warm">16+ &middot; 40%</span><span class="pill pill-warm">18+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">3+ &middot; 100%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 50%</span><span class="pill pill-warm">6+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-cool">4+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-warm">3+ &middot; 60%</span><span class="pill pill-warm">4+ &middot; 40%</span><span class="pill pill-cool">5+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">16+ &middot; 90%</span><span class="pill pill-hot">18+ &middot; 90%</span><span class="pill pill-warm">21+ &middot; 60%</span><span class="pill pill-warm">24+ &middot; 40%</span><span class="pill pill-cool">27+ &middot; 30%</span></div></div><p class="vs-opp-line">Toronto Tempo allowed 100.2 points per game on average over their last 5 games (season avg 92.6, +8%)</p><p class="vs-opp-line">Toronto Tempo ranks #15 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 15p/2r/3a/43pm</p><div class="flag-chip flag-chip-inline">&#9888; Portland Fire scored 94.4 points per game on average over their last 5 games (season avg 85.7, +10%)</div><p class="vs-opp-line">Points, home/away split: home: 19.2 pts/g (4g) &middot; away: 13.2 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Emily Engstler <span class="player-team">(Portland Fire)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">4+ &middot; 100%</span><span class="pill pill-hot">6+ &middot; 100%</span><span class="pill pill-hot">8+ &middot; 70%</span><span class="pill pill-warm">10+ &middot; 50%</span><span class="pill pill-cool">12+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 60%</span><span class="pill pill-warm">6+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 80%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-warm">4+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-hot">1+ &middot; 80%</span><span class="pill pill-cool">2+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">12+ &middot; 90%</span><span class="pill pill-hot">14+ &middot; 80%</span><span class="pill pill-hot">16+ &middot; 80%</span><span class="pill pill-warm">18+ &middot; 40%</span><span class="pill pill-cool">20+ &middot; 30%</span></div></div><p class="vs-opp-line">Toronto Tempo allowed 100.2 points per game on average over their last 5 games (season avg 92.6, +8%)</p><p class="vs-opp-line">Toronto Tempo ranks #15 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 16p/7r/0a/13pm</p><div class="flag-chip flag-chip-inline">&#9888; Portland Fire scored 94.4 points per game on average over their last 5 games (season avg 85.7, +10%)</div><p class="vs-opp-line">Points, home/away split: home: 8.2 pts/g (4g) &middot; away: 10.7 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Nyadiew Puoch <span class="player-team">(Portland Fire)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-warm">4+ &middot; 40%</span><span class="pill pill-cool">6+ &middot; 30%</span><span class="pill pill-cool">8+ &middot; 20%</span><span class="pill pill-cool">10+ &middot; 10%</span><span class="pill pill-cool">12+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 70%</span><span class="pill pill-cool">3+ &middot; 30%</span><span class="pill pill-cool">4+ &middot; 10%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-cool">1+ &middot; 20%</span><span class="pill pill-cool">2+ &middot; 0%</span><span class="pill pill-cool">3+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-cool">1+ &middot; 20%</span><span class="pill pill-cool">2+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-cool">8+ &middot; 30%</span><span class="pill pill-cool">10+ &middot; 20%</span><span class="pill pill-cool">12+ &middot; 10%</span><span class="pill pill-cool">14+ &middot; 0%</span><span class="pill pill-cool">16+ &middot; 0%</span></div></div><p class="vs-opp-line">Toronto Tempo allowed 100.2 points per game on average over their last 5 games (season avg 92.6, +8%)</p><p class="vs-opp-line">Toronto Tempo ranks #15 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 5p/3r/1a/13pm</p><div class="flag-chip flag-chip-inline">&#9888; Portland Fire scored 94.4 points per game on average over their last 5 games (season avg 85.7, +10%)</div><p class="vs-opp-line">Points, home/away split: home: 5.2 pts/g (4g) &middot; away: 2.3 pts/g (6g)</p><div class="flag-chip flag-chip-inline">&#9888; Playing more than usual lately (21.0 min vs 15.2 min average) - reason unconfirmed, worth checking team news before relying on the floors above.</div></div><div class="player-block"><p class="player-name">Megan DiLeo <span class="player-team">(Portland Fire)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">9+ &middot; 90%</span><span class="pill pill-hot">11+ &middot; 80%</span><span class="pill pill-hot">13+ &middot; 70%</span><span class="pill pill-warm">15+ &middot; 60%</span><span class="pill pill-warm">17+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-hot">2+ &middot; 90%</span><span class="pill pill-hot">3+ &middot; 70%</span><span class="pill pill-warm">4+ &middot; 60%</span><span class="pill pill-warm">5+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 70%</span><span class="pill pill-warm">2+ &middot; 40%</span><span class="pill pill-warm">3+ &middot; 40%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">1+ &middot; 100%</span><span class="pill pill-warm">2+ &middot; 60%</span><span class="pill pill-cool">3+ &middot; 20%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">13+ &middot; 90%</span><span class="pill pill-hot">15+ &middot; 80%</span><span class="pill pill-hot">18+ &middot; 70%</span><span class="pill pill-warm">21+ &middot; 60%</span><span class="pill pill-warm">24+ &middot; 40%</span></div></div><p class="vs-opp-line">Toronto Tempo allowed 100.2 points per game on average over their last 5 games (season avg 92.6, +8%)</p><p class="vs-opp-line">Toronto Tempo ranks #15 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 14p/4r/0a/23pm</p><div class="flag-chip flag-chip-inline">&#9888; Portland Fire scored 94.4 points per game on average over their last 5 games (season avg 85.7, +10%)</div><p class="vs-opp-line">Points, home/away split: home: 14.0 pts/g (4g) &middot; away: 15.8 pts/g (6g)</p></div><div class="player-block"><p class="player-name">Carla Leite <span class="player-team">(Portland Fire)</span> <span class="games-sampled">last 10 games</span></p><div class="stat-group"><span class="stat-group-label">PTS</span><div class="pill-row"><span class="pill pill-hot">10+ &middot; 100%</span><span class="pill pill-hot">12+ &middot; 90%</span><span class="pill pill-warm">14+ &middot; 60%</span><span class="pill pill-warm">16+ &middot; 50%</span><span class="pill pill-warm">18+ &middot; 50%</span></div></div><div class="stat-group"><span class="stat-group-label">REB</span><div class="pill-row"><span class="pill pill-warm">2+ &middot; 60%</span><span class="pill pill-warm">3+ &middot; 50%</span><span class="pill pill-cool">4+ &middot; 10%</span><span class="pill pill-cool">5+ &middot; 0%</span></div></div><div class="stat-group"><span class="stat-group-label">AST</span><div class="pill-row"><span class="pill pill-warm">6+ &middot; 60%</span><span class="pill pill-warm">7+ &middot; 50%</span><span class="pill pill-cool">9+ &middot; 30%</span></div></div><div class="stat-group"><span class="stat-group-label">3PM</span><div class="pill-row"><span class="pill pill-hot">0+ &middot; 100%</span><span class="pill pill-warm">1+ &middot; 50%</span><span class="pill pill-cool">2+ &middot; 10%</span></div></div><div class="stat-group"><span class="stat-group-label">PRA</span><div class="pill-row"><span class="pill pill-hot">18+ &middot; 90%</span><span class="pill pill-hot">20+ &middot; 90%</span><span class="pill pill-hot">23+ &middot; 70%</span><span class="pill pill-warm">26+ &middot; 60%</span><span class="pill pill-cool">29+ &middot; 30%</span></div></div><p class="vs-opp-line">Toronto Tempo allowed 100.2 points per game on average over their last 5 games (season avg 92.6, +8%)</p><p class="vs-opp-line">Toronto Tempo ranks #15 in defense out of 15 teams in the league, over the last 10 games.</p><p class="vs-opp-line">vs opponent (last 1, &lt;365d): 23 May 26: 15p/3r/9a/03pm</p><div class="flag-chip flag-chip-inline">&#9888; Portland Fire scored 94.4 points per game on average over their last 5 games (season avg 85.7, +10%)</div><p class="vs-opp-line">Points, home/away split: home: 16.5 pts/g (4g) &middot; away: 16.2 pts/g (6g)</p></div></div></div></section>
+</div>
+
+<script>
+function showTab(id, btn) {
+  document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+  document.querySelectorAll('.tab-card').forEach(function(c) { c.classList.remove('active'); });
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+  window.scrollTo({ top: 0, behavior: 'instant' });
+}
+</script>
+</body>
+</html>
