@@ -171,6 +171,95 @@ def _points_score_for_player(p, side_label, side_full, opponent_full, g):
     }
 
 
+TOP_TIER_RANK_CUTOFF = 5  # "top 5" / "bottom 5" - see note near MISMATCH_RANK_CUTOFF
+VS_TOP_DEFENSE_MIN_GAMES = 2  # need at least this many games vs top-tier D to say anything
+
+def build_vs_top_defense_note(games, league_rankings, medium_threshold, own_hit_rate):
+    """
+    Buckets this player's sampled games into "vs a top-TOP_TIER_RANK_CUTOFF
+    defense" vs the rest, using each game's actual opponent_team_id and
+    that opponent's CURRENT league defensive rank (a reasonable proxy - a
+    team that's elite defensively now was very likely comparable a few
+    games ago too). Compares her hit-rate on the medium points threshold
+    in that bucket to her overall hit-rate. Returns None if there's too
+    small a sample of top-defense games to say anything meaningful.
+    """
+    if not games or not league_rankings or medium_threshold is None:
+        return None
+
+    vs_top_defense_hits = 0
+    vs_top_defense_games = 0
+    for g in games:
+        opp_id = g.get("opponent_team_id")
+        if not opp_id:
+            continue
+        opp_rank = league_rankings.get(str(opp_id))
+        if not opp_rank:
+            continue
+        if opp_rank["def_rank"] <= TOP_TIER_RANK_CUTOFF:
+            v = _extract_stat_value(g, "points")
+            if v is None:
+                continue
+            vs_top_defense_games += 1
+            if v >= medium_threshold:
+                vs_top_defense_hits += 1
+
+    if vs_top_defense_games < VS_TOP_DEFENSE_MIN_GAMES:
+        return None
+
+    vs_top_defense_rate = vs_top_defense_hits / vs_top_defense_games
+    drop = own_hit_rate - vs_top_defense_rate if own_hit_rate is not None else None
+    return {
+        "games_vs_top_defense": vs_top_defense_games,
+        "hit_rate_vs_top_defense": round(vs_top_defense_rate, 3),
+        "overall_hit_rate": round(own_hit_rate, 3) if own_hit_rate is not None else None,
+        "drop": round(drop, 3) if drop is not None else None,
+        "is_notable_drop": drop is not None and drop >= 0.25,
+    }
+
+
+MISMATCH_RANK_CUTOFF = 5  # WNBA has ~15 teams, so "bottom half" (7-8) is
+# too loose to mean anything - top/bottom 5 is the tier that's actually
+# worth a warning. Shared with TOP_TIER_RANK_CUTOFF above by design (same
+# cutoff, used in two different places).
+
+def build_matchup_mismatch_warnings(team_full, opp_full, team_rank, opp_rank):
+    """
+    Flags a real top-vs-bottom mismatch between one team's offense and the
+    other's defense, in both directions:
+      - team_full's offense is bottom-5 in the league AND opp_full's
+        defense is top-5 -> warning (this team will struggle to score)
+      - team_full's offense is top-5 AND opp_full's defense is bottom-5
+        -> positive note (this team should score easily)
+    Both team_rank and opp_rank are league_rankings[...] dicts
+    ({"off_rank", "def_rank", "teams_ranked", ...}) or None if unavailable.
+    Returns a list of plain-language strings (usually 0 or 1 items).
+    """
+    notes = []
+    if not team_rank or not opp_rank:
+        return notes
+    n = team_rank.get("teams_ranked")
+    if not n or n < TOP_TIER_RANK_CUTOFF * 2:
+        return notes  # too few teams in scope for "top 5" to mean anything
+
+    off_rank = team_rank["off_rank"]
+    opp_def_rank = opp_rank["def_rank"]
+
+    if off_rank > n - MISMATCH_RANK_CUTOFF and opp_def_rank <= MISMATCH_RANK_CUTOFF:
+        notes.append(
+            f"⚠️ {team_full} has a bottom-{MISMATCH_RANK_CUTOFF} offense (#{off_rank} of {n}) "
+            f"facing {opp_full}, a top-{MISMATCH_RANK_CUTOFF} defense (#{opp_def_rank} of {n}) - "
+            f"expect a tough night scoring."
+        )
+    elif off_rank <= MISMATCH_RANK_CUTOFF and opp_def_rank > n - MISMATCH_RANK_CUTOFF:
+        notes.append(
+            f"✅ {team_full} has a top-{MISMATCH_RANK_CUTOFF} offense (#{off_rank} of {n}) "
+            f"facing {opp_full}, a bottom-{MISMATCH_RANK_CUTOFF} defense (#{opp_def_rank} of {n}) - "
+            f"a favorable scoring matchup."
+        )
+    return notes
+
+
 def build_top_points_performers(report):
     """
     Points-only Top Performers list, scored on all 4 factors (own hit-rate,
@@ -855,6 +944,57 @@ def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
     return round(prob, 3)
 
 
+def expected_margin(team_a_stats, team_b_stats):
+    """Plain projected point margin (team_a minus team_b), no probability
+    conversion - used to flag likely-lopsided games for #5 below. Returns
+    None if either team's season stats aren't available."""
+    if not team_a_stats or not team_b_stats:
+        return None
+    return (team_a_stats["pts_pg"] - team_a_stats["pts_allowed_pg"]) - \
+           (team_b_stats["pts_pg"] - team_b_stats["pts_allowed_pg"])
+
+
+# WNBA margins run much tighter than NBA's - a "double-digit blowout" here
+# is already a real outlier, not a mid-size margin, so this threshold is
+# set well below an NBA-style 20-25 point cutoff.
+BLOWOUT_MARGIN_THRESHOLD = 15
+# Only players averaging under this many minutes get discounted - a team's
+# actual starters play through most lopsided games and shouldn't be
+# penalized for a role player's early exit.
+BLOWOUT_LOW_MINUTES_CUTOFF = 20
+# How much to shrink a low-minutes player's floor probabilities toward 0
+# when a blowout is projected - a flat, modest discount rather than a
+# precisely-fit number (this whole effect is a directional judgment call,
+# not something the free data here can calibrate exactly).
+BLOWOUT_DISCOUNT_FACTOR = 0.85
+
+def apply_blowout_discount(floors, avg_minutes, proj_margin):
+    """
+    Shrinks floor probabilities toward 0 for a bench/low-minutes player
+    when the game is projected to be a lopsided blowout - in a lopsided
+    game she's more likely to see reduced minutes as the outcome becomes
+    decided early, which lowers her real chance of reaching any prop
+    threshold below what her normal-game sample implies. Applied only to
+    players under BLOWOUT_LOW_MINUTES_CUTOFF average minutes; starters are
+    left untouched since they generally still play most of a blowout.
+    Returns a new floors dict; does not mutate the input.
+    """
+    if proj_margin is None or avg_minutes is None:
+        return floors
+    if abs(proj_margin) < BLOWOUT_MARGIN_THRESHOLD or avg_minutes >= BLOWOUT_LOW_MINUTES_CUTOFF:
+        return floors
+    discounted = {}
+    for stat_key, thresholds in floors.items():
+        if not thresholds:
+            discounted[stat_key] = thresholds
+            continue
+        discounted[stat_key] = {
+            t: (round(p * BLOWOUT_DISCOUNT_FACTOR, 3) if p is not None else None)
+            for t, p in thresholds.items()
+        }
+    return discounted
+
+
 # ---------- league-wide rolling rankings (last 10 games) ----------
 #
 # Separate window from the last-5 "recent defense/offense vs season avg"
@@ -1282,7 +1422,12 @@ STAT_KEY_ALIASES = {
     "assists": ["assists", "AST", "ast"],
     "minutes": ["minutes", "MIN", "min"],
     "threes": ["threePointFieldGoalsMade", "3PM", "threesMade", "fg3m"],
+    "fga": ["fieldGoalsAttempted", "FGA", "fga"],
 }
+# Field goals attempted are also sometimes reported as a combined
+# "made-attempted" string (e.g. "7-15") under a field like "fieldGoals" or
+# "FG" - same pattern as THREES_COMBINED_ALIASES, tried as a fallback.
+FGA_COMBINED_ALIASES = ["fieldGoalsMade-fieldGoalsAttempted", "FG", "fieldGoals"]
 # ESPN sometimes reports threes as a combined "made-attempted" string (e.g.
 # "3-7") under a field like "threePointFieldGoalsMade-threePointFieldGoalsAttempted"
 # or "3PT", rather than a separate made-only numeric field. Tried as a
@@ -1332,6 +1477,41 @@ def detect_minutes_change(games):
         "is_notable_drop": pct_change <= -MINUTES_CHANGE_THRESHOLD,
     }
 
+
+
+SHOT_VOLUME_CHANGE_THRESHOLD = MINUTES_CHANGE_THRESHOLD  # same bar as minutes
+
+def detect_shot_volume_change(games):
+    """
+    Same pattern as detect_minutes_change, but for field goals attempted -
+    catches a player whose usage (shot volume) is trending up or down even
+    when her minutes haven't moved much. Informational only, not modeled
+    into any probability - see detect_minutes_change docstring for why.
+    Returns None if FGA data wasn't found or there's too little history.
+    """
+    if len(games) < 2:
+        return None
+    fga_vals = []
+    for g in games:
+        v = _extract_stat_value(g, "fga")
+        if v is not None:
+            fga_vals.append(v)
+    if len(fga_vals) < 2:
+        return None
+
+    most_recent = fga_vals[-1]
+    prior_avg = sum(fga_vals[:-1]) / len(fga_vals[:-1])
+    if prior_avg == 0:
+        return None
+
+    pct_change = (most_recent - prior_avg) / prior_avg
+    return {
+        "most_recent_fga": round(most_recent, 1),
+        "prior_avg_fga": round(prior_avg, 1),
+        "pct_change": round(pct_change, 3),
+        "is_notable_bump": pct_change >= SHOT_VOLUME_CHANGE_THRESHOLD,
+        "is_notable_drop": pct_change <= -SHOT_VOLUME_CHANGE_THRESHOLD,
+    }
 
 
 RETURN_FROM_ABSENCE_MIN_MINUTES = 3  # a game with fewer than this many
@@ -1434,6 +1614,16 @@ def _extract_stat_value(game_entry, stat_key):
                     made_part = raw.split("-")[0]
                     try:
                         return float(made_part)
+                    except (TypeError, ValueError):
+                        continue
+    if stat_key == "fga":
+        for alias in FGA_COMBINED_ALIASES:
+            if alias in stats:
+                raw = str(stats[alias])
+                if "-" in raw:
+                    attempted_part = raw.split("-")[-1]
+                    try:
+                        return float(attempted_part)
                     except (TypeError, ValueError):
                         continue
     return None
@@ -1580,7 +1770,8 @@ _names_debug_printed = False
 def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured_names=None,
                       opponent_recent_defense_note=None, own_recent_offense_note=None,
                       opponent_allowed_reb_ast_note=None,
-                      team_schedule_events=None, opponent_league_rank=None):
+                      team_schedule_events=None, opponent_league_rank=None,
+                      league_rankings=None, proj_margin=None):
     global _gamelog_debug_printed, _names_debug_printed
     starters = get_team_starters(team_id, season)
     team_injured_names = team_injured_names or set()
@@ -1612,6 +1803,19 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
         floors = {}
         for stat_key in PROP_THRESHOLDS:
             floors[stat_key] = prop_floor_probs(games, stat_key)
+
+        # #5: discount a low-minutes player's floors if this game projects
+        # as a blowout (see apply_blowout_discount docstring). Computed
+        # from her own recent minutes sample, not season averages, so it
+        # reflects her actual current role.
+        blowout_discount_applied = False
+        minutes_sample = [v for v in (_extract_stat_value(g, "minutes") for g in games) if v is not None]
+        avg_minutes = sum(minutes_sample) / len(minutes_sample) if minutes_sample else None
+        if proj_margin is not None and avg_minutes is not None:
+            new_floors = apply_blowout_discount(floors, avg_minutes, proj_margin)
+            if new_floors is not floors:
+                blowout_discount_applied = True
+                floors = new_floors
 
         vs_opponent = None
         if opponent_team_id:
@@ -1659,6 +1863,35 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
         if team_schedule_events:
             home_away_split = get_player_home_away_split(games, team_schedule_events, "points")
 
+        # #3: how she's historically done vs top-tier defenses specifically,
+        # compared to her overall hit-rate. Uses the medium points threshold,
+        # same one used everywhere else on the page (Top Performers, etc.)
+        points_floors = floors.get(POINTS_STAT_KEY, {})
+        vs_top_defense_note = None
+        if points_floors:
+            sorted_thresholds = sorted(points_floors.keys())
+            idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
+            medium_t = sorted_thresholds[idx]
+            own_hit_rate = points_floors.get(medium_t)
+            vs_top_defense_note = build_vs_top_defense_note(games, league_rankings, medium_t, own_hit_rate)
+
+        # #4: shot-volume (FGA) trend, informational only - same treatment
+        # as the minutes note above, never fed into any probability.
+        shot_volume_change = detect_shot_volume_change(games)
+        shot_volume_note = None
+        if shot_volume_change and shot_volume_change["is_notable_bump"]:
+            shot_volume_note = (
+                f"Shooting more than usual lately ({shot_volume_change['most_recent_fga']} FGA "
+                f"vs {shot_volume_change['prior_avg_fga']} FGA average) - worth checking whether "
+                f"this is a role change before relying on the floors above."
+            )
+        elif shot_volume_change and shot_volume_change["is_notable_drop"]:
+            shot_volume_note = (
+                f"Shooting less than usual lately ({shot_volume_change['most_recent_fga']} FGA "
+                f"vs {shot_volume_change['prior_avg_fga']} FGA average) - a shrinking role would "
+                f"lower the floors above."
+            )
+
         results.append({
             "name": p["name"],
             "games_sampled": len(games),
@@ -1672,6 +1905,10 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
             "opponent_league_rank": opponent_league_rank,
             "return_from_absence_note": return_from_absence_note,
             "home_away_points_split": home_away_split,
+            "vs_top_defense_note": vs_top_defense_note,
+            "shot_volume_note": shot_volume_note,
+            "shot_volume_data_found": shot_volume_change is not None,
+            "blowout_discount_applied": blowout_discount_applied,
         })
     return results
 
@@ -1710,17 +1947,37 @@ def flag_missing_starters(team_id, season=SEASON):
     if injuries is None:
         return (["Injury check unavailable - verify starters manually before betting this game."], set())
 
+    # Statuses that mean "very likely out" vs. ones that mean "decided
+    # closer to game time" - conflating these hides exactly the info that
+    # matters most: a "questionable" tag means check again right before
+    # tipoff, since ESPN's injury feed is pregame/official-confirmation
+    # speed and can lag real news for a game-day call.
+    LIKELY_OUT_STATUSES = ("out", "inactive", "injured reserve", "suspension")
+    GAME_TIME_DECISION_STATUSES = ("questionable", "doubtful", "day-to-day", "day to day", "gtd")
+
     flags = []
     injured_starter_names = set()
     for inj in injuries:
         athlete = inj.get("athlete", {})
         name = athlete.get("displayName") or athlete.get("fullName")
         status = inj.get("status", "")
-        if name in starter_names and status.lower() not in ("probable", "active", "available"):
-            flags.append(
-                f"{name} listed as {status} - started the team's most recent game. "
-                f"Treat this team's props and spread with extra caution."
-            )
+        status_lower = status.lower()
+        if name in starter_names and status_lower not in ("probable", "active", "available"):
+            if status_lower in LIKELY_OUT_STATUSES:
+                flags.append(
+                    f"{name} listed as {status} - started the team's most recent game and is "
+                    f"very likely to sit. Treat this team's props and spread with extra caution."
+                )
+            elif status_lower in GAME_TIME_DECISION_STATUSES:
+                flags.append(
+                    f"{name} listed as {status} - a game-time decision, not a confirmed absence. "
+                    f"Re-check closer to tipoff before betting this team's props or spread."
+                )
+            else:
+                flags.append(
+                    f"{name} listed as {status} - started the team's most recent game. "
+                    f"Treat this team's props and spread with extra caution."
+                )
             injured_starter_names.add(name)
     return (flags, injured_starter_names)
 
@@ -1778,6 +2035,12 @@ def build_report():
         home_schedule_events = get_team_schedule_events(home_id)
         away_schedule_events = get_team_schedule_events(away_id)
 
+        # Projected margin from home's perspective (positive = home
+        # favored). Same underlying formula as spread_cover_prob, computed
+        # once here so both sides' props can use it for the blowout
+        # discount (#5) without re-deriving it per player.
+        proj_margin_home_perspective = expected_margin(home_stats, away_stats)
+
         # Each side's players face the OPPONENT's defense, so the note
         # attached to a player is the opponent's recent-defense numbers,
         # their OWN team's recent offense note, and the opponent's
@@ -1788,13 +2051,27 @@ def build_report():
                                        own_recent_offense_note=home_recent_offense,
                                        opponent_allowed_reb_ast_note=away_allowed_reb_ast,
                                        team_schedule_events=home_schedule_events,
-                                       opponent_league_rank=league_rankings.get(str(away_id)))
+                                       opponent_league_rank=league_rankings.get(str(away_id)),
+                                       league_rankings=league_rankings,
+                                       proj_margin=proj_margin_home_perspective)
         away_props = get_player_props(away_id, opponent_team_id=home_id, team_injured_names=away_injured_names,
                                        opponent_recent_defense_note=home_recent_defense,
                                        own_recent_offense_note=away_recent_offense,
                                        opponent_allowed_reb_ast_note=home_allowed_reb_ast,
                                        team_schedule_events=away_schedule_events,
-                                       opponent_league_rank=league_rankings.get(str(home_id)))
+                                       opponent_league_rank=league_rankings.get(str(home_id)),
+                                       league_rankings=league_rankings,
+                                       proj_margin=-proj_margin_home_perspective if proj_margin_home_perspective is not None else None)
+
+        # Mismatch warnings (#1): checked in both directions since either
+        # team could be the one with the extreme offense or defense.
+        mismatch_warnings = []
+        mismatch_warnings += build_matchup_mismatch_warnings(
+            g["home_team_name"], g["away_team_name"],
+            league_rankings.get(str(home_id)), league_rankings.get(str(away_id)))
+        mismatch_warnings += build_matchup_mismatch_warnings(
+            g["away_team_name"], g["home_team_name"],
+            league_rankings.get(str(away_id)), league_rankings.get(str(home_id)))
 
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
@@ -1810,7 +2087,9 @@ def build_report():
             "away_league_rank": league_rankings.get(str(away_id)),
             "home_team_split": get_team_home_away_split(home_id),
             "away_team_split": get_team_home_away_split(away_id),
+            "mismatch_warnings": mismatch_warnings,
             "spread_lines": [],
+            "moneyline": None,
             "home_players": home_props,
             "away_players": away_props,
         }
@@ -1825,6 +2104,14 @@ def build_report():
                 "home_cover_prob": p_home,
                 "away_cover_prob": p_away,
             })
+
+        # Moneyline (#2): straight win probability is just the spread-cover
+        # model evaluated at spread=0, reusing the exact same function and
+        # rest adjustment as the spread lines above rather than a separate
+        # model, so it stays consistent with the spread numbers on the page.
+        ml_home = apply_rest_adjustment(spread_cover_prob(home_stats, away_stats, 0), home_rest, away_rest)
+        ml_away = apply_rest_adjustment(spread_cover_prob(away_stats, home_stats, 0), away_rest, home_rest)
+        entry["moneyline"] = {"home_win_prob": ml_home, "away_win_prob": ml_away}
 
         report.append(entry)
     return report
@@ -2198,6 +2485,17 @@ def _render_matchup_summary(game_report):
                       f'{s["pts_against_pg"]:.1f} points per game at home this season '
                       f'({s["games_counted"]} games).')
 
+    mismatch_warnings = game_report.get("mismatch_warnings") or []
+    for w in mismatch_warnings:
+        lines.append(w)
+
+    ml = game_report.get("moneyline")
+    if ml and ml.get("home_win_prob") is not None and ml.get("away_win_prob") is not None:
+        lines.append(
+            f'Moneyline: {game_report["home_team_full"]} {ml["home_win_prob"] * 100:.0f}% to win, '
+            f'{game_report["away_team_full"]} {ml["away_win_prob"] * 100:.0f}% to win.'
+        )
+
     if not lines:
         return ""
 
@@ -2337,11 +2635,22 @@ def render_html(report):
             if lines:
                 team_bullets.append((team_abbr, lines))
 
-        if team_bullets:
+        mismatch_warnings = g.get("mismatch_warnings") or []
+        ml = g.get("moneyline")
+        extra_lines = list(mismatch_warnings)
+        if ml and ml.get("home_win_prob") is not None and ml.get("away_win_prob") is not None:
+            extra_lines.append(
+                f'Moneyline: {g["home_team_full"]} {ml["home_win_prob"] * 100:.0f}% to win, '
+                f'{g["away_team_full"]} {ml["away_win_prob"] * 100:.0f}% to win.'
+            )
+
+        if team_bullets or extra_lines:
             block.append('<ul class="matchup-facts">')
             for _abbr, lines in team_bullets:
                 for line in lines:
                     block.append(f'<li>{line}</li>')
+            for line in extra_lines:
+                block.append(f'<li>{line}</li>')
             block.append('</ul>')
 
         flags = g["away_flags"] + g["home_flags"]
@@ -2455,6 +2764,25 @@ def render_html(report):
 
                 if p.get("minutes_note"):
                     block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["minutes_note"]}</div>')
+
+                if p.get("shot_volume_note"):
+                    block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["shot_volume_note"]}</div>')
+
+                vs_top_d = p.get("vs_top_defense_note")
+                if vs_top_d and vs_top_d.get("is_notable_drop"):
+                    block.append(
+                        f'<div class="flag-chip flag-chip-inline">&#9888; Hits her line '
+                        f'{vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% of the time vs top-{TOP_TIER_RANK_CUTOFF} '
+                        f'defenses ({vs_top_d["games_vs_top_defense"]} games), vs '
+                        f'{vs_top_d["overall_hit_rate"] * 100:.0f}% overall - notable drop against strong defense.</div>'
+                    )
+
+                if p.get("blowout_discount_applied"):
+                    block.append(
+                        '<div class="flag-chip flag-chip-inline">&#9888; Floors above are discounted - '
+                        'this game projects as a blowout and she is a low-minutes player who may see reduced '
+                        'run once it\'s decided.</div>'
+                    )
                 block.append('</div>')
             block.append('</div>')
         block.append('</div>')  # close collapsible-body
@@ -2982,6 +3310,11 @@ if __name__ == "__main__":
         1 for g in report if any(s["home_cover_prob"] is not None for s in g["spread_lines"])
     )
     games_with_props = sum(1 for g in report if g["home_players"] or g["away_players"])
+    total_players = sum(len(g["home_players"]) + len(g["away_players"]) for g in report)
+    players_with_shot_volume_data = sum(
+        1 for g in report for p in (g["home_players"] + g["away_players"])
+        if p.get("shot_volume_data_found")
+    )
     if len(report) == 0:
         print("WARNING: 0 games in report - scoreboard fetch may have failed for all dates queried (check WARNING lines above).")
     print(f"Done. {len(report)} games processed.")
@@ -2991,3 +3324,8 @@ if __name__ == "__main__":
         print("  WARNING: no spread data on any game - check get_team_season_stats() field names.")
     if len(report) > 0 and games_with_props == 0:
         print("  WARNING: no player props on any game - check get_player_recent_gamelog() field names.")
+    if total_players > 0 and players_with_shot_volume_data == 0:
+        print("  WARNING: no shot-volume (FGA) notes on any player - the FGA field-name guess in "
+              "STAT_KEY_ALIASES/FGA_COMBINED_ALIASES likely doesn't match what ESPN actually returns. "
+              "This fails silently (no crash) so it's easy to miss - check a raw gamelog response's "
+              "stat field names and update the fga aliases if needed.")
