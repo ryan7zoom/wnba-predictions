@@ -1830,34 +1830,26 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
             if team_injured_names:
                 minutes_note = (
                     f"Playing more than usual lately ({minutes_change['most_recent_minutes']} min "
-                    f"vs {minutes_change['prior_avg_minutes']} min average) - team is missing "
-                    f"{', '.join(sorted(team_injured_names))}, which may explain the increased role."
+                    f"vs {minutes_change['prior_avg_minutes']} min average), likely due to "
+                    f"{', '.join(sorted(team_injured_names))} being out."
                 )
             else:
                 minutes_note = (
                     f"Playing more than usual lately ({minutes_change['most_recent_minutes']} min "
-                    f"vs {minutes_change['prior_avg_minutes']} min average) - reason unconfirmed, "
-                    f"worth checking team news before relying on the floors above."
+                    f"vs {minutes_change['prior_avg_minutes']} min average)."
                 )
         elif minutes_change and minutes_change["is_notable_drop"]:
             minutes_note = (
                 f"Playing less than usual lately ({minutes_change['most_recent_minutes']} min "
-                f"vs {minutes_change['prior_avg_minutes']} min average) - could be a minor injury, "
-                f"rotation change, or blowout garbage time. Worth checking team news before "
-                f"relying on the floors above, since a reduced role lowers them."
+                f"vs {minutes_change['prior_avg_minutes']} min average)."
             )
 
         return_from_absence = detect_recent_return_from_absence(games)
         return_from_absence_note = None
         if return_from_absence:
             games_since = return_from_absence["games_since_absence"]
-            recency = "her most recent game" if games_since == 1 else f"{games_since} games ago"
-            return_from_absence_note = (
-                f"Apparent absence detected: logged well below normal minutes in a recent game, "
-                f"then returned with real minutes as of {recency}. Cause is unconfirmed (could be "
-                f"injury, illness, rest, or a coaching decision) - verify her status before relying "
-                f"on the floors above, since a still-limited role would lower them."
-            )
+            recency = "last game" if games_since == 1 else f"{games_since} games ago"
+            return_from_absence_note = f"Returned from an apparent absence as of {recency}."
 
         home_away_split = None
         if team_schedule_events:
@@ -1882,14 +1874,12 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
         if shot_volume_change and shot_volume_change["is_notable_bump"]:
             shot_volume_note = (
                 f"Shooting more than usual lately ({shot_volume_change['most_recent_fga']} FGA "
-                f"vs {shot_volume_change['prior_avg_fga']} FGA average) - worth checking whether "
-                f"this is a role change before relying on the floors above."
+                f"vs {shot_volume_change['prior_avg_fga']} FGA average)."
             )
         elif shot_volume_change and shot_volume_change["is_notable_drop"]:
             shot_volume_note = (
                 f"Shooting less than usual lately ({shot_volume_change['most_recent_fga']} FGA "
-                f"vs {shot_volume_change['prior_avg_fga']} FGA average) - a shrinking role would "
-                f"lower the floors above."
+                f"vs {shot_volume_change['prior_avg_fga']} FGA average)."
             )
 
         results.append({
@@ -2394,6 +2384,22 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         if v is not None and v >= best["threshold"]:
                             reasons.append(f"also hit {best['threshold']}+ {stat_label} in her last meeting vs this opponent")
 
+                    # Short, one-clause versions of the context notes -
+                    # same underlying data as the All Games section, just
+                    # condensed to fit a pick-card reason line.
+                    if p.get("minutes_note"):
+                        reasons.append(p["minutes_note"].rstrip("."))
+                    if p.get("shot_volume_note"):
+                        reasons.append(p["shot_volume_note"].rstrip("."))
+                    vs_top_d = p.get("vs_top_defense_note")
+                    if vs_top_d and vs_top_d.get("is_notable_drop"):
+                        reasons.append(
+                            f'only {vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% vs top-{TOP_TIER_RANK_CUTOFF} defenses '
+                            f'(vs {vs_top_d["overall_hit_rate"]*100:.0f}% overall)'
+                        )
+                    if p.get("blowout_discount_applied"):
+                        reasons.append("floor discounted for projected blowout")
+
                     game_picks.append({
                         "type": stat_label,
                         "player": p["name"],
@@ -2771,17 +2777,14 @@ def render_html(report):
                 vs_top_d = p.get("vs_top_defense_note")
                 if vs_top_d and vs_top_d.get("is_notable_drop"):
                     block.append(
-                        f'<div class="flag-chip flag-chip-inline">&#9888; Hits her line '
-                        f'{vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% of the time vs top-{TOP_TIER_RANK_CUTOFF} '
-                        f'defenses ({vs_top_d["games_vs_top_defense"]} games), vs '
-                        f'{vs_top_d["overall_hit_rate"] * 100:.0f}% overall - notable drop against strong defense.</div>'
+                        f'<div class="flag-chip flag-chip-inline">&#9888; Hits line '
+                        f'{vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% vs top-{TOP_TIER_RANK_CUTOFF} defenses '
+                        f'({vs_top_d["games_vs_top_defense"]}g) vs {vs_top_d["overall_hit_rate"] * 100:.0f}% overall.</div>'
                     )
 
                 if p.get("blowout_discount_applied"):
                     block.append(
-                        '<div class="flag-chip flag-chip-inline">&#9888; Floors above are discounted - '
-                        'this game projects as a blowout and she is a low-minutes player who may see reduced '
-                        'run once it\'s decided.</div>'
+                        '<div class="flag-chip flag-chip-inline">&#9888; Floors discounted for projected blowout.</div>'
                     )
                 block.append('</div>')
             block.append('</div>')
