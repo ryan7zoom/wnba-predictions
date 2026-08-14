@@ -96,6 +96,32 @@ TREND_H2H_BONUS = 0.05
 TREND_OPP_ALLOWING_BONUS = 0.05
 TREND_OWN_OFFENSE_BONUS = 0.05
 
+def best_line_at_confidence(p, min_confidence=0.85, stat_key=POINTS_STAT_KEY):
+    """
+    Returns the HIGHEST threshold for this player/stat whose hit-rate is
+    still >= min_confidence, instead of the fixed "medium" rung used for
+    ranking. This is the line to actually bet on a strong player: don't
+    take her at the safest/lowest floor if she clears a much higher one
+    almost as reliably - that leaves payout on the table for no real
+    reduction in risk.
+
+    Returns None if she has no threshold clearing min_confidence at all
+    (i.e. she isn't a confident-enough play on this stat right now).
+    """
+    floors = p["floors"].get(stat_key, {})
+    if not floors:
+        return None
+    qualifying = [(t, hr) for t, hr in floors.items() if hr is not None and hr >= min_confidence]
+    if not qualifying:
+        return None
+    best_t, best_hr = max(qualifying, key=lambda x: x[0])
+    return {
+        "threshold": best_t,
+        "hit_rate": best_hr,
+        "games_sampled": p.get("games_sampled"),
+    }
+
+
 def _points_score_for_player(p, side_label, side_full, opponent_full, g):
     """
     Builds the 4-factor points candidate for a single player, or None if
@@ -162,6 +188,7 @@ def _points_score_for_player(p, side_label, side_full, opponent_full, g):
         "stat_key": POINTS_STAT_KEY,
         "threshold": medium_t,
         "hit_rate": hit_rate,
+        "fair_odds": fair_decimal_odds(hit_rate, adjusted_score=score),
         "score": round(score, 4),
         "games_sampled": p["games_sampled"],
         "vs_opp_aligned": h2h_hit,
@@ -169,6 +196,25 @@ def _points_score_for_player(p, side_label, side_full, opponent_full, g):
         "opp_weak_defense": opp_weak_defense,
         "reasons": reasons,
     }
+
+
+def fair_decimal_odds(hit_rate, adjusted_score=None):
+    """Break-even decimal odds implied by our own probability - our number,
+    not a bookmaker's, just for comparing against the real line.
+
+    Uses adjusted_score (hit_rate + H2H/opponent-defense/volume bonuses)
+    when given, since a 90% raw hit-rate against a weak defense with a
+    good H2H history is a stronger bet than a bare 90% - the bonuses
+    already exist in `score`, this just reflects them in the odds too.
+    Clamped below 0.99 so a near-certain score doesn't imply impossible
+    odds like 1.00 (the bonuses are nudges, not real certainty).
+    """
+    p = adjusted_score if adjusted_score is not None else hit_rate
+    if not p or p <= 0:
+        return None
+    p = min(p, 0.99)
+    return round(1 / p, 2)
+
 
 
 TOP_TIER_RANK_CUTOFF = 5  # "top 5" / "bottom 5" - see note near MISMATCH_RANK_CUTOFF
@@ -358,6 +404,7 @@ def build_top_trend_performers(report):
                             "stat_key": stat_key,
                             "threshold": medium_t,
                             "hit_rate": hit_rate,
+                            "fair_odds": fair_decimal_odds(hit_rate, adjusted_score=score),
                             "score": round(score, 4),
                             "reasons": reasons,
                         }
@@ -1677,6 +1724,12 @@ THRESHOLD_MIN_FLOOR = {
 }
 
 
+# Fixed bookmaker line grid for points. If set, _build_player_thresholds
+# picks the book lines closest to (mostly at/below, with 1-2 above) the
+# player's own average instead of inventing custom rungs like 7 or 13 that
+# no book actually offers. Keep this in sync with what your book posts.
+BOOKMAKER_POINT_LINES = [5, 8, 10, 12, 15, 18, 20, 22, 25]
+
 def _build_player_thresholds(avg, stat_key):
     """
     Builds a descending-then-one-above band of thresholds centered on a
@@ -1686,7 +1739,24 @@ def _build_player_thresholds(avg, stat_key):
 
     Example (points, avg=20): 12, 15, 18, 20, 22
     Example (points, avg=8):  3, 5, 7, 8, 10
+
+    For "points" specifically, if BOOKMAKER_POINT_LINES is set, snaps to
+    that fixed grid instead, so every threshold this function returns is
+    a line you can actually go place with a book - never an in-between
+    number like 7 that only exists inside this model.
     """
+    if stat_key == "points" and BOOKMAKER_POINT_LINES:
+        lines = sorted(BOOKMAKER_POINT_LINES)
+        rung_count = RUNG_COUNT.get(stat_key, 4)
+        above_n = min(RUNGS_ABOVE_AVG, rung_count - 1)
+        below_lines = sorted([l for l in lines if l <= avg], reverse=True)
+        above_lines = sorted([l for l in lines if l > avg])
+        chosen_below = below_lines[: rung_count - above_n]
+        chosen_above = above_lines[:above_n]
+        chosen = sorted(set(chosen_below + chosen_above))
+        if not chosen:
+            chosen = lines[:rung_count] if avg <= lines[0] else lines[-rung_count:]
+        return tuple(chosen)
     rung_count = RUNG_COUNT.get(stat_key, 4)
     above = min(RUNGS_ABOVE_AVG, rung_count - 1)
     below = rung_count - 1 - above
@@ -2409,6 +2479,7 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "is_home": is_home,
                         "pick_label": f'{best["threshold"]}+ {stat_label}',
                         "prob": best["prob"],
+                        "fair_odds": fair_decimal_odds(best["prob"]),
                         "reasons": reasons,
                         "thin_margin": is_thin_margin,
                     })
@@ -2431,6 +2502,7 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "is_home": is_home,
                         "pick_label": f'{s["spread"]:+} spread',
                         "prob": prob,
+                        "fair_odds": fair_decimal_odds(prob),
                         "reasons": [f"model favors {side_full} to cover {s['spread']:+} today"],
                         "thin_margin": False,
                     }
@@ -2535,6 +2607,9 @@ def _render_top_picks(games):
         if pk.get("thin_margin"):
             card_class += " pick-card-thin"
             thin_badge = '<span class="thin-margin-badge">THIN MARGIN</span>'
+        odds_html = ""
+        if pk.get("fair_odds"):
+            odds_html = f'<span class="pick-fair-odds">x{pk["fair_odds"]:.2f}</span>'
         return f"""
           <div class="{card_class}">
             <div class="pick-card-top">
@@ -2543,6 +2618,7 @@ def _render_top_picks(games):
             </div>
             <p class="pick-player">{pk["player"]} {thin_badge}</p>
             <p class="pick-line">{pk["pick_label"]}</p>
+            <p class="pick-meta">{odds_html}</p>
             {reasons_html}
           </div>"""
 
@@ -3154,6 +3230,8 @@ h1 {{
 .pick-player {{ font-size: 0.98em; font-weight: 700; color: var(--text); margin: 0 0 2px; }}
 .pick-line {{ font-size: 0.88em; font-weight: 600; color: var(--orange); margin: 0 0 2px; }}
 .pick-context {{ font-size: 0.75em; color: var(--text-dim); margin: 0; }}
+.pick-meta {{ font-size: 0.72em; color: var(--text-dim); margin: 2px 0 0; display: flex; gap: 10px; flex-wrap: wrap; }}
+.pick-fair-odds {{ color: var(--teal); }}
 .pick-reasons {{
   margin: 8px 0 0;
   padding: 0 0 0 16px;
