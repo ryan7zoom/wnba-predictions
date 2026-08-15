@@ -938,6 +938,161 @@ def get_team_recent_allowed_reb_ast(team_id, season=SEASON, n=OPP_ALLOWED_GAMES_
     }
 
 
+# ---------- period scoring: 1H, Q1, and full game totals ----------
+#
+# Pulls real linescores from the same /summary?event= boxscore endpoint
+# already used elsewhere, instead of dividing full game numbers in half.
+
+PERIOD_GAMES_SAMPLE = 10
+PERIOD_STD_DEV_1H = 7.5
+PERIOD_STD_DEV_Q1 = 5.0
+FULL_GAME_STD_DEV_TOTAL = 14.0
+
+
+def _team_linescore_from_summary(payload, team_id):
+    """
+    Returns (q1, q2, q3, q4) as floats for one team from a /summary
+    payload's boxscore.teams block, or None if not found. OT periods
+    beyond 4 are ignored for period splits.
+    """
+    for team_box in payload.get("boxscore", {}).get("teams", []):
+        if str(team_box.get("team", {}).get("id")) != str(team_id):
+            continue
+        linescores = team_box.get("linescores", [])
+        if not linescores:
+            return None
+        vals = []
+        for period in linescores[:4]:
+            v = period.get("value")
+            if v is None:
+                return None
+            vals.append(float(v))
+        while len(vals) < 4:
+            vals.append(0.0)
+        return tuple(vals)
+    return None
+
+
+def get_team_period_scoring(team_id, season=SEASON, n=PERIOD_GAMES_SAMPLE):
+    """
+    Fetches the team's last n completed games' box scores and returns
+    per-game Q1 and 1H (Q1+Q2) points, for and against, using real
+    ESPN linescores. Returns None if no usable data is found.
+    """
+    events = get_team_schedule_events(team_id, season)
+    completed = []
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not opponent:
+            continue
+        opp_id = opponent.get("team", {}).get("id")
+        if not opp_id:
+            continue
+        completed.append({"date": e.get("date", ""), "event_id": e.get("id"), "opp_id": opp_id})
+
+    if not completed:
+        return None
+    completed.sort(key=lambda x: x["date"])
+    last_n = completed[-n:]
+
+    q1_for, q1_against = [], []
+    h1_for, h1_against = [], []
+
+    for g in last_n:
+        try:
+            payload = espn_web_get("/summary", {"event": g["event_id"]})
+        except Exception:
+            continue
+        own = _team_linescore_from_summary(payload, team_id)
+        opp = _team_linescore_from_summary(payload, g["opp_id"])
+        if own is None or opp is None:
+            continue
+        q1_for.append(own[0])
+        q1_against.append(opp[0])
+        h1_for.append(own[0] + own[1])
+        h1_against.append(opp[0] + opp[1])
+
+    if not q1_for:
+        return None
+
+    return {
+        "games_counted": len(q1_for),
+        "q1_for_pg": round(sum(q1_for) / len(q1_for), 1),
+        "q1_against_pg": round(sum(q1_against) / len(q1_against), 1),
+        "h1_for_pg": round(sum(h1_for) / len(h1_for), 1),
+        "h1_against_pg": round(sum(h1_against) / len(h1_against), 1),
+    }
+
+
+def period_spread_cover_prob(team_a_period, team_b_period, spread, period_key="h1", std_dev=PERIOD_STD_DEV_1H):
+    """
+    Same normal-approximation shape as spread_cover_prob, but on period
+    scoring (1H or Q1) instead of full game. period_key is "h1" or "q1".
+    """
+    if not team_a_period or not team_b_period:
+        return None
+    for_key = f"{period_key}_for_pg"
+    against_key = f"{period_key}_against_pg"
+    expected_margin_period = (team_a_period[for_key] - team_a_period[against_key]) - \
+                              (team_b_period[for_key] - team_b_period[against_key])
+    z = (spread + expected_margin_period) / std_dev
+    prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return round(prob, 3)
+
+
+def period_total_over_prob(team_a_period, team_b_period, total_line, period_key="h1", std_dev=None):
+    """
+    Probability that team_a's period total (points scored, not margin)
+    goes OVER total_line, blending team_a's own scoring pace in that
+    period with team_b's pace of allowing points in that period.
+    """
+    if not team_a_period or not team_b_period:
+        return None
+    for_key = f"{period_key}_for_pg"
+    against_key = f"{period_key}_against_pg"
+    if std_dev is None:
+        std_dev = PERIOD_STD_DEV_Q1 if period_key == "q1" else PERIOD_STD_DEV_1H
+    projected = (team_a_period[for_key] + team_b_period[against_key]) / 2.0
+    z = (projected - total_line) / std_dev
+    prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return round(prob, 3)
+
+
+def full_game_total_over_prob(team_a_stats, team_b_stats, total_line, std_dev=FULL_GAME_STD_DEV_TOTAL):
+    """
+    Probability that team_a's full game points scored goes OVER total_line,
+    blending team_a's own scoring average with team_b's points-allowed
+    average, same blended-projection approach as period_total_over_prob.
+    """
+    if not team_a_stats or not team_b_stats:
+        return None
+    projected = (team_a_stats["pts_pg"] + team_b_stats["pts_allowed_pg"]) / 2.0
+    z = (projected - total_line) / std_dev
+    prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return round(prob, 3)
+
+
+def game_total_over_prob(team_a_stats, team_b_stats, total_line, std_dev=None):
+    """
+    Full game combined total (both teams' points) over/under probability.
+    std_dev widened relative to a single team's total since it's summing
+    two teams' variance.
+    """
+    if not team_a_stats or not team_b_stats:
+        return None
+    if std_dev is None:
+        std_dev = FULL_GAME_STD_DEV_TOTAL * 1.4
+    projected = (team_a_stats["pts_pg"] + team_a_stats["pts_allowed_pg"] +
+                 team_b_stats["pts_pg"] + team_b_stats["pts_allowed_pg"]) / 2.0
+    z = (projected - total_line) / std_dev
+    prob = 0.5 * (1 + math.erf(z / math.sqrt(2)))
+    return round(prob, 3)
+
+
 def _stat_volatility_flag(values, avg):
     """
     Plain check: does this team's allowed stat swing wildly game to game,
@@ -1040,6 +1195,136 @@ def apply_blowout_discount(floors, avg_minutes, proj_margin):
             for t, p in thresholds.items()
         }
     return discounted
+
+
+# ---------- absentee-aware scoring margin ----------
+#
+# Instead of a flat points penalty for a missing starter, this checks the
+# team's own last several games for actual games played without that
+# specific player (via box score athlete presence), and uses the team's
+# real scoring margin from that "without" bucket if there's enough of a
+# sample. Falls back to a small capped discount only when no real
+# "without" data exists yet.
+
+ABSENTEE_LOOKBACK_GAMES = 10
+ABSENTEE_MIN_WITHOUT_GAMES = 2
+ABSENTEE_FALLBACK_DISCOUNT = 3.0  # points, only used with no real data
+
+
+def _team_game_had_player(team_id, event_id, player_name):
+    """
+    Checks whether a named player appears anywhere in this team's box
+    score for this game (played or on the roster listing at all).
+    Returns True/False, or None if the box score itself couldn't be read.
+    """
+    try:
+        payload = espn_web_get("/summary", {"event": event_id})
+    except Exception:
+        return None
+    for team_box in payload.get("boxscore", {}).get("players", []):
+        if str(team_box.get("team", {}).get("id")) != str(team_id):
+            continue
+        for stat_group in team_box.get("statistics", []):
+            for athlete_entry in stat_group.get("athletes", []):
+                athlete = athlete_entry.get("athlete", {})
+                name = athlete.get("displayName") or athlete.get("fullName") or ""
+                if name.strip().lower() == player_name.strip().lower():
+                    return True
+        return False
+    return None
+
+
+def get_team_margin_with_without_players(team_id, missing_player_names, season=SEASON,
+                                          n=ABSENTEE_LOOKBACK_GAMES):
+    """
+    Splits the team's last n completed games into games where NONE of
+    missing_player_names played vs games where at least one of them did,
+    and returns each bucket's average scoring margin (points for minus
+    points against), plus game counts.
+
+    Returns None if there's no missing_player_names to check, or the
+    schedule has no completed games at all.
+    """
+    if not missing_player_names:
+        return None
+    events = get_team_schedule_events(team_id, season)
+    completed = []
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not this_team or not opponent:
+            continue
+        try:
+            pts_for = float(this_team.get("score", {}).get("value")) if isinstance(this_team.get("score"), dict) \
+                else float(this_team.get("score"))
+            pts_against = float(opponent.get("score", {}).get("value")) if isinstance(opponent.get("score"), dict) \
+                else float(opponent.get("score"))
+        except (TypeError, ValueError):
+            continue
+        completed.append({
+            "date": e.get("date", ""), "event_id": e.get("id"),
+            "margin": pts_for - pts_against,
+        })
+
+    if not completed:
+        return None
+    completed.sort(key=lambda x: x["date"])
+    last_n = completed[-n:]
+
+    with_margins, without_margins = [], []
+    for g in last_n:
+        had_any = False
+        checked_any = False
+        for name in missing_player_names:
+            present = _team_game_had_player(team_id, g["event_id"], name)
+            if present is None:
+                continue
+            checked_any = True
+            if present:
+                had_any = True
+        if not checked_any:
+            continue
+        if had_any:
+            with_margins.append(g["margin"])
+        else:
+            without_margins.append(g["margin"])
+
+    return {
+        "with_margins": with_margins,
+        "without_margins": without_margins,
+        "with_avg": round(sum(with_margins) / len(with_margins), 1) if with_margins else None,
+        "without_avg": round(sum(without_margins) / len(without_margins), 1) if without_margins else None,
+        "without_games_count": len(without_margins),
+    }
+
+
+def absentee_margin_adjustment(team_id, missing_player_names, base_margin, season=SEASON):
+    """
+    Returns (adjusted_margin, warning_line_or_None).
+
+    If the team has ABSENTEE_MIN_WITHOUT_GAMES or more real games without
+    these players, uses the real difference between the "without" bucket
+    and "with" bucket average margins to shift base_margin, and fires the
+    one-line warning. Otherwise applies a small flat fallback discount
+    with no warning (not enough data to call it a real signal yet).
+    """
+    if not missing_player_names:
+        return base_margin, None
+
+    data = get_team_margin_with_without_players(team_id, missing_player_names, season)
+    if not data or data["without_games_count"] < ABSENTEE_MIN_WITHOUT_GAMES or data["with_avg"] is None:
+        return base_margin - ABSENTEE_FALLBACK_DISCOUNT, None
+
+    real_diff = data["without_avg"] - data["with_avg"]
+    adjusted = base_margin + real_diff
+    warning = (f"Using real recent-form margin without {', '.join(missing_player_names)} "
+               f"({data['without_games_count']} games, avg margin {data['without_avg']:+.1f}) "
+               f"instead of a flat penalty.")
+    return adjusted, warning
 
 
 # ---------- league-wide rolling rankings (last 10 games) ----------
@@ -2148,16 +2433,51 @@ def build_report():
             "home_team_split": get_team_home_away_split(home_id),
             "away_team_split": get_team_home_away_split(away_id),
             "mismatch_warnings": mismatch_warnings,
+            "absentee_warnings": [],
             "spread_lines": [],
             "moneyline": None,
+            "totals": {"game": [], "first_half": [], "first_quarter": []},
+            "period_spreads": {"first_half": [], "first_quarter": []},
             "home_players": home_props,
             "away_players": away_props,
         }
 
-        for spread in (-3.5, -1.5, 1.5, 3.5):
+        # Absentee-aware margin adjustment. Instead of a flat penalty for
+        # missing starters, checks the team's own last games for real
+        # scoring margin with vs without those exact players.
+        base_expected_margin = expected_margin(home_stats, away_stats)
+        adj_margin = base_expected_margin
+        if base_expected_margin is not None:
+            if home_injured_names:
+                adj_margin, warn = absentee_margin_adjustment(home_id, home_injured_names, adj_margin)
+                if warn:
+                    entry["absentee_warnings"].append(f"{g['home_team_name']}: {warn}")
+            if away_injured_names:
+                adj_margin, warn = absentee_margin_adjustment(away_id, away_injured_names, adj_margin, )
+                # away team's absence should hurt the home-perspective margin
+                # in the opposite direction, so re-derive from away's own
+                # with/without split against the away side of the margin.
+                away_data = get_team_margin_with_without_players(away_id, away_injured_names)
+                if away_data and away_data["without_games_count"] >= ABSENTEE_MIN_WITHOUT_GAMES and away_data["with_avg"] is not None:
+                    real_diff = away_data["without_avg"] - away_data["with_avg"]
+                    adj_margin = adj_margin - real_diff
+                    warn2 = (f"Using real recent-form margin without {', '.join(away_injured_names)} "
+                             f"({away_data['without_games_count']} games, avg margin {away_data['without_avg']:+.1f}) "
+                             f"instead of a flat penalty.")
+                    entry["absentee_warnings"].append(f"{g['away_team_name']}: {warn2}")
+                else:
+                    adj_margin = adj_margin - ABSENTEE_FALLBACK_DISCOUNT
+
+        margin_shift = 0.0 if base_expected_margin is None else (adj_margin - base_expected_margin)
+
+        for spread in (-7.5, -5.5, -3.5, -1.5, 1.5, 3.5, 5.5, 7.5):
             p_home = spread_cover_prob(home_stats, away_stats, spread)
+            if p_home is not None and margin_shift:
+                p_home = spread_cover_prob(home_stats, away_stats, spread - margin_shift)
             p_home = apply_rest_adjustment(p_home, home_rest, away_rest)
             p_away = spread_cover_prob(away_stats, home_stats, spread)
+            if p_away is not None and margin_shift:
+                p_away = spread_cover_prob(away_stats, home_stats, spread + margin_shift)
             p_away = apply_rest_adjustment(p_away, away_rest, home_rest)
             entry["spread_lines"].append({
                 "spread": spread,
@@ -2165,13 +2485,64 @@ def build_report():
                 "away_cover_prob": p_away,
             })
 
-        # Moneyline (#2): straight win probability is just the spread-cover
-        # model evaluated at spread=0, reusing the exact same function and
-        # rest adjustment as the spread lines above rather than a separate
-        # model, so it stays consistent with the spread numbers on the page.
-        ml_home = apply_rest_adjustment(spread_cover_prob(home_stats, away_stats, 0), home_rest, away_rest)
-        ml_away = apply_rest_adjustment(spread_cover_prob(away_stats, home_stats, 0), away_rest, home_rest)
+        # Moneyline: straight win probability, spread-cover model at
+        # spread=0, shifted by the same absentee-adjusted margin.
+        ml_home = spread_cover_prob(home_stats, away_stats, -margin_shift)
+        ml_home = apply_rest_adjustment(ml_home, home_rest, away_rest)
+        ml_away = spread_cover_prob(away_stats, home_stats, margin_shift)
+        ml_away = apply_rest_adjustment(ml_away, away_rest, home_rest)
         entry["moneyline"] = {"home_win_prob": ml_home, "away_win_prob": ml_away}
+
+        # Full game totals (combined both teams' points).
+        for total_line in (155.5, 160.5, 165.5, 170.5, 175.5, 180.5):
+            p_over = game_total_over_prob(home_stats, away_stats, total_line)
+            entry["totals"]["game"].append({
+                "line": total_line,
+                "over_prob": p_over,
+                "under_prob": None if p_over is None else round(1 - p_over, 3),
+            })
+
+        # Period scoring (real linescores, not full-game divided in half).
+        home_period = get_team_period_scoring(home_id)
+        away_period = get_team_period_scoring(away_id)
+
+        for total_line in (17.5, 19.5, 21.5, 23.5):
+            p_over_home = period_total_over_prob(home_period, away_period, total_line, period_key="q1")
+            p_over_away = period_total_over_prob(away_period, home_period, total_line, period_key="q1")
+            entry["totals"]["first_quarter"].append({
+                "line": total_line,
+                "home_over_prob": p_over_home,
+                "home_under_prob": None if p_over_home is None else round(1 - p_over_home, 3),
+                "away_over_prob": p_over_away,
+                "away_under_prob": None if p_over_away is None else round(1 - p_over_away, 3),
+            })
+
+        for total_line in (38.5, 40.5, 42.5, 44.5, 46.5, 48.5):
+            p_over_home = period_total_over_prob(home_period, away_period, total_line, period_key="h1")
+            p_over_away = period_total_over_prob(away_period, home_period, total_line, period_key="h1")
+            entry["totals"]["first_half"].append({
+                "line": total_line,
+                "home_over_prob": p_over_home,
+                "home_under_prob": None if p_over_home is None else round(1 - p_over_home, 3),
+                "away_over_prob": p_over_away,
+                "away_under_prob": None if p_over_away is None else round(1 - p_over_away, 3),
+            })
+
+        for spread in (-3.5, -1.5, 1.5, 3.5):
+            p_home_h1 = period_spread_cover_prob(home_period, away_period, spread, period_key="h1")
+            p_away_h1 = period_spread_cover_prob(away_period, home_period, spread, period_key="h1")
+            entry["period_spreads"]["first_half"].append({
+                "spread": spread,
+                "home_cover_prob": p_home_h1,
+                "away_cover_prob": p_away_h1,
+            })
+            p_home_q1 = period_spread_cover_prob(home_period, away_period, spread, period_key="q1", std_dev=PERIOD_STD_DEV_Q1)
+            p_away_q1 = period_spread_cover_prob(away_period, home_period, spread, period_key="q1", std_dev=PERIOD_STD_DEV_Q1)
+            entry["period_spreads"]["first_quarter"].append({
+                "spread": spread,
+                "home_cover_prob": p_home_q1,
+                "away_cover_prob": p_away_q1,
+            })
 
         report.append(entry)
     return report
@@ -2493,6 +2864,10 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
             ):
                 if prob is not None and prob >= min_confidence:
                     key = side_label
+                    reasons = [f"model favors {side_full} to cover {s['spread']:+} today"]
+                    for w in (g.get("absentee_warnings") or []):
+                        if side_full in w:
+                            reasons.append(w)
                     candidate = {
                         "type": "Spread",
                         "player": side_full,
@@ -2503,12 +2878,141 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "pick_label": f'{s["spread"]:+} spread',
                         "prob": prob,
                         "fair_odds": fair_decimal_odds(prob),
-                        "reasons": [f"model favors {side_full} to cover {s['spread']:+} today"],
+                        "reasons": reasons,
                         "thin_margin": False,
                     }
                     if key not in best_spread_per_team or prob > best_spread_per_team[key]["prob"]:
                         best_spread_per_team[key] = candidate
         game_picks.extend(best_spread_per_team.values())
+
+        # --- full game total (best line only) ---
+        best_game_total = None
+        for t in g.get("totals", {}).get("game", []):
+            for direction, prob in (("Over", t.get("over_prob")), ("Under", t.get("under_prob"))):
+                if prob is not None and prob >= min_confidence:
+                    candidate = {
+                        "type": "Game Total",
+                        "player": f'{direction} {t["line"]}',
+                        "team_context": matchup,
+                        "team_abbr": "Total",
+                        "team_full": matchup,
+                        "is_home": None,
+                        "pick_label": f'{direction} {t["line"]} (full game)',
+                        "prob": prob,
+                        "fair_odds": fair_decimal_odds(prob),
+                        "reasons": [f"model favors {direction} {t['line']} for the full game total"],
+                        "thin_margin": False,
+                    }
+                    if best_game_total is None or prob > best_game_total["prob"]:
+                        best_game_total = candidate
+        if best_game_total:
+            game_picks.append(best_game_total)
+
+        # --- first half spread (best line per team) ---
+        best_h1_spread_per_team = {}
+        for s in g.get("period_spreads", {}).get("first_half", []):
+            for side_label, side_full, is_home, prob in (
+                (g["away_team"], g["away_team_full"], False, s.get("away_cover_prob")),
+                (g["home_team"], g["home_team_full"], True, s.get("home_cover_prob")),
+            ):
+                if prob is not None and prob >= min_confidence:
+                    key = side_label
+                    candidate = {
+                        "type": "1H Spread",
+                        "player": side_full,
+                        "team_context": matchup,
+                        "team_abbr": side_label,
+                        "team_full": side_full,
+                        "is_home": is_home,
+                        "pick_label": f'{s["spread"]:+} first half spread',
+                        "prob": prob,
+                        "fair_odds": fair_decimal_odds(prob),
+                        "reasons": [f"model favors {side_full} to cover {s['spread']:+} in the first half"],
+                        "thin_margin": False,
+                    }
+                    if key not in best_h1_spread_per_team or prob > best_h1_spread_per_team[key]["prob"]:
+                        best_h1_spread_per_team[key] = candidate
+        game_picks.extend(best_h1_spread_per_team.values())
+
+        # --- first half team total (best line per team) ---
+        best_h1_total_per_team = {}
+        for t in g.get("totals", {}).get("first_half", []):
+            for side_label, side_full, is_home, over_prob, under_prob in (
+                (g["away_team"], g["away_team_full"], False, t.get("away_over_prob"), t.get("away_under_prob")),
+                (g["home_team"], g["home_team_full"], True, t.get("home_over_prob"), t.get("home_under_prob")),
+            ):
+                for direction, prob in (("Over", over_prob), ("Under", under_prob)):
+                    if prob is not None and prob >= min_confidence:
+                        key = (side_label, direction)
+                        candidate = {
+                            "type": "1H Team Total",
+                            "player": f'{side_full} {direction} {t["line"]}',
+                            "team_context": matchup,
+                            "team_abbr": side_label,
+                            "team_full": side_full,
+                            "is_home": is_home,
+                            "pick_label": f'{side_full} {direction} {t["line"]} (first half)',
+                            "prob": prob,
+                            "fair_odds": fair_decimal_odds(prob),
+                            "reasons": [f"model favors {side_full} {direction} {t['line']} in the first half"],
+                            "thin_margin": False,
+                        }
+                        if key not in best_h1_total_per_team or prob > best_h1_total_per_team[key]["prob"]:
+                            best_h1_total_per_team[key] = candidate
+        game_picks.extend(best_h1_total_per_team.values())
+
+        # --- first quarter spread (best line per team) ---
+        best_q1_spread_per_team = {}
+        for s in g.get("period_spreads", {}).get("first_quarter", []):
+            for side_label, side_full, is_home, prob in (
+                (g["away_team"], g["away_team_full"], False, s.get("away_cover_prob")),
+                (g["home_team"], g["home_team_full"], True, s.get("home_cover_prob")),
+            ):
+                if prob is not None and prob >= min_confidence:
+                    key = side_label
+                    candidate = {
+                        "type": "1Q Spread",
+                        "player": side_full,
+                        "team_context": matchup,
+                        "team_abbr": side_label,
+                        "team_full": side_full,
+                        "is_home": is_home,
+                        "pick_label": f'{s["spread"]:+} first quarter spread',
+                        "prob": prob,
+                        "fair_odds": fair_decimal_odds(prob),
+                        "reasons": [f"model favors {side_full} to cover {s['spread']:+} in the first quarter"],
+                        "thin_margin": False,
+                    }
+                    if key not in best_q1_spread_per_team or prob > best_q1_spread_per_team[key]["prob"]:
+                        best_q1_spread_per_team[key] = candidate
+        game_picks.extend(best_q1_spread_per_team.values())
+
+        # --- first quarter team total (best line per team) ---
+        best_q1_total_per_team = {}
+        for t in g.get("totals", {}).get("first_quarter", []):
+            for side_label, side_full, is_home, over_prob, under_prob in (
+                (g["away_team"], g["away_team_full"], False, t.get("away_over_prob"), t.get("away_under_prob")),
+                (g["home_team"], g["home_team_full"], True, t.get("home_over_prob"), t.get("home_under_prob")),
+            ):
+                for direction, prob in (("Over", over_prob), ("Under", under_prob)):
+                    if prob is not None and prob >= min_confidence:
+                        key = (side_label, direction)
+                        candidate = {
+                            "type": "1Q Team Total",
+                            "player": f'{side_full} {direction} {t["line"]}',
+                            "team_context": matchup,
+                            "team_abbr": side_label,
+                            "team_full": side_full,
+                            "is_home": is_home,
+                            "pick_label": f'{side_full} {direction} {t["line"]} (first quarter)',
+                            "prob": prob,
+                            "fair_odds": fair_decimal_odds(prob),
+                            "reasons": [f"model favors {side_full} {direction} {t['line']} in the first quarter"],
+                            "thin_margin": False,
+                        }
+                        if key not in best_q1_total_per_team or prob > best_q1_total_per_team[key]["prob"]:
+                            best_q1_total_per_team[key] = candidate
+        game_picks.extend(best_q1_total_per_team.values())
 
         # Bet builder requirement: need 2+ picks from this game, or it's not
         # useful for combining legs - drop games with only 0 or 1 qualifying pick.
@@ -2628,14 +3132,15 @@ def _render_top_picks(games):
         if game.get("game_report"):
             summary_html = _render_matchup_summary(game["game_report"])
 
-        # Split picks by team, home team's group first. Within each group,
-        # the existing sort (comfortable picks first, then by probability)
-        # is preserved since game["picks"] was already sorted that way.
-        home_rows = [_render_pick_card(pk) for pk in game["picks"] if pk.get("is_home")]
-        away_rows = [_render_pick_card(pk) for pk in game["picks"] if not pk.get("is_home")]
+        # Split picks by team, home team's group first. Full game total
+        # picks aren't tied to either side (is_home is None for those), so
+        # they get their own neutral group instead of falling into away.
+        home_rows = [_render_pick_card(pk) for pk in game["picks"] if pk.get("is_home") is True]
+        away_rows = [_render_pick_card(pk) for pk in game["picks"] if pk.get("is_home") is False]
+        total_rows = [_render_pick_card(pk) for pk in game["picks"] if pk.get("is_home") is None]
 
-        home_full = next((pk["team_full"] for pk in game["picks"] if pk.get("is_home")), None)
-        away_full = next((pk["team_full"] for pk in game["picks"] if not pk.get("is_home")), None)
+        home_full = next((pk["team_full"] for pk in game["picks"] if pk.get("is_home") is True), None)
+        away_full = next((pk["team_full"] for pk in game["picks"] if pk.get("is_home") is False), None)
 
         team_sections = []
         if home_rows:
@@ -2652,6 +3157,14 @@ def _render_top_picks(games):
           <h4 class="pick-team-label">{away_full} <span class="home-away-tag">(away)</span></h4>
           <div class="pick-grid">
             {''.join(away_rows)}
+          </div>
+        </div>""")
+        if total_rows:
+            team_sections.append(f"""
+        <div class="pick-team-group">
+          <h4 class="pick-team-label">Game Total</h4>
+          <div class="pick-grid">
+            {''.join(total_rows)}
           </div>
         </div>""")
 
@@ -2742,13 +3255,80 @@ def render_html(report):
                 block.append(f'<div class="flag-chip">&#9888; {flag}</div>')
             block.append('</div>')
 
-        block.append('<h3 class="section-label">Spread Cover</h3>')
+        absentee_warnings = g.get("absentee_warnings") or []
+        if absentee_warnings:
+            block.append('<div class="flag-stack">')
+            for w in absentee_warnings:
+                block.append(f'<div class="flag-chip">&#9888; {w}</div>')
+            block.append('</div>')
+
+        block.append('<h3 class="section-label">Full Game Spread</h3>')
         block.append('<div class="spread-block">')
         for s in g["spread_lines"]:
             block.append(f'<div class="spread-row-group">')
             block.append(f'<span class="spread-num">{s["spread"]:+}</span>')
             block.append(_prob_bar(g["away_team"], s["away_cover_prob"], "var(--teal)"))
             block.append(_prob_bar(g["home_team"], s["home_cover_prob"], "var(--orange)"))
+            block.append('</div>')
+        block.append('</div>')
+
+        block.append('<h3 class="section-label">Full Game Total</h3>')
+        block.append('<div class="spread-block">')
+        for t in g.get("totals", {}).get("game", []):
+            if t["over_prob"] is None:
+                continue
+            block.append(f'<div class="spread-row-group">')
+            block.append(f'<span class="spread-num">{t["line"]}</span>')
+            block.append(_prob_bar("Over", t["over_prob"], "var(--teal)"))
+            block.append(_prob_bar("Under", t["under_prob"], "var(--orange)"))
+            block.append('</div>')
+        block.append('</div>')
+
+        block.append('<h3 class="section-label">First Half Spread</h3>')
+        block.append('<div class="spread-block">')
+        for s in g.get("period_spreads", {}).get("first_half", []):
+            if s["home_cover_prob"] is None:
+                continue
+            block.append(f'<div class="spread-row-group">')
+            block.append(f'<span class="spread-num">{s["spread"]:+}</span>')
+            block.append(_prob_bar(g["away_team"], s["away_cover_prob"], "var(--teal)"))
+            block.append(_prob_bar(g["home_team"], s["home_cover_prob"], "var(--orange)"))
+            block.append('</div>')
+        block.append('</div>')
+
+        block.append('<h3 class="section-label">First Half Team Total</h3>')
+        block.append('<div class="spread-block">')
+        for t in g.get("totals", {}).get("first_half", []):
+            if t["home_over_prob"] is None:
+                continue
+            block.append(f'<div class="spread-row-group">')
+            block.append(f'<span class="spread-num">{t["line"]}</span>')
+            block.append(_prob_bar(f'{g["away_team"]} O', t["away_over_prob"], "var(--teal)"))
+            block.append(_prob_bar(f'{g["home_team"]} O', t["home_over_prob"], "var(--orange)"))
+            block.append('</div>')
+        block.append('</div>')
+
+        block.append('<h3 class="section-label">First Quarter Spread</h3>')
+        block.append('<div class="spread-block">')
+        for s in g.get("period_spreads", {}).get("first_quarter", []):
+            if s["home_cover_prob"] is None:
+                continue
+            block.append(f'<div class="spread-row-group">')
+            block.append(f'<span class="spread-num">{s["spread"]:+}</span>')
+            block.append(_prob_bar(g["away_team"], s["away_cover_prob"], "var(--teal)"))
+            block.append(_prob_bar(g["home_team"], s["home_cover_prob"], "var(--orange)"))
+            block.append('</div>')
+        block.append('</div>')
+
+        block.append('<h3 class="section-label">First Quarter Team Total</h3>')
+        block.append('<div class="spread-block">')
+        for t in g.get("totals", {}).get("first_quarter", []):
+            if t["home_over_prob"] is None:
+                continue
+            block.append(f'<div class="spread-row-group">')
+            block.append(f'<span class="spread-num">{t["line"]}</span>')
+            block.append(_prob_bar(f'{g["away_team"]} O', t["away_over_prob"], "var(--teal)"))
+            block.append(_prob_bar(f'{g["home_team"]} O', t["home_over_prob"], "var(--orange)"))
             block.append('</div>')
         block.append('</div>')
 
@@ -3332,7 +3912,7 @@ function toggleCollapsible(headerEl) {{
 <h1>WNBA Daily Probabilities</h1>
 
 <p class="updated">Generated {format_display_date(local_now())} {local_now().strftime('%H:%M')}</p>
-<p class="disclaimer">Estimates only, NOT guarantees — verify starters and lines yourself before betting.</p>
+<p class="disclaimer">Estimates only, NOT guarantees. Verify starters and lines yourself before betting.</p>
 
 <div class="tab-nav">
   <button class="tab-card active" data-tab="tab-builders" onclick="showTab('tab-builders', this)">
