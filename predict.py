@@ -954,6 +954,13 @@ def _team_linescore_from_summary(payload, team_id):
     Returns (q1, q2, q3, q4) as floats for one team from a /summary
     payload's boxscore.teams block, or None if not found. OT periods
     beyond 4 are ignored for period splits.
+
+    Kept as a fallback path only. The primary path in
+    get_team_period_scoring now reads linescores from the scoreboard
+    endpoint's competitor objects instead, since that structure is the
+    documented/verified one (competitors[].linescores[].value), while
+    boxscore.teams[].linescores on /summary was an unconfirmed guess
+    that returned nothing in production.
     """
     for team_box in payload.get("boxscore", {}).get("teams", []):
         if str(team_box.get("team", {}).get("id")) != str(team_id):
@@ -973,48 +980,82 @@ def _team_linescore_from_summary(payload, team_id):
     return None
 
 
+def _team_linescore_from_scoreboard_competitor(competitor):
+    """
+    Same shape as _team_linescore_from_summary's return value, (q1, q2,
+    q3, q4), but reads from a scoreboard competitor object's own
+    linescores field instead, which is the confirmed/documented
+    structure for ESPN's site.api.espn.com scoreboard endpoint. Returns
+    None if linescores are missing or incomplete for this competitor.
+    """
+    linescores = competitor.get("linescores", [])
+    if not linescores:
+        return None
+    vals = []
+    for period in linescores[:4]:
+        v = period.get("value")
+        if v is None:
+            return None
+        vals.append(float(v))
+    while len(vals) < 4:
+        vals.append(0.0)
+    return tuple(vals)
+
+
 def get_team_period_scoring(team_id, season=SEASON, n=PERIOD_GAMES_SAMPLE):
     """
-    Fetches the team's last n completed games' box scores and returns
-    per-game Q1 and 1H (Q1+Q2) points, for and against, using real
-    ESPN linescores. Returns None if no usable data is found.
+    Fetches the team's last n completed games and returns per-game Q1
+    and 1H (Q1+Q2) points, for and against, using real ESPN linescores
+    pulled from the scoreboard endpoint (same /scoreboard?dates= pattern
+    already used elsewhere in this script for daily game discovery),
+    which is the confirmed structure for per-period scoring, rather than
+    the unconfirmed /summary boxscore.teams[].linescores guess this used
+    before. Returns None if no usable data is found.
     """
     events = get_team_schedule_events(team_id, season)
-    completed = []
+    completed_dates = []
     for e in events:
         comp = e.get("competitions", [{}])[0]
         if not comp.get("status", {}).get("type", {}).get("completed"):
             continue
-        competitors = comp.get("competitors", [])
-        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
-        if not opponent:
+        date_str = e.get("date", "")
+        if not date_str:
             continue
-        opp_id = opponent.get("team", {}).get("id")
-        if not opp_id:
+        try:
+            ymd = datetime.strptime(date_str[:10], "%Y-%m-%d").strftime("%Y%m%d")
+        except ValueError:
             continue
-        completed.append({"date": e.get("date", ""), "event_id": e.get("id"), "opp_id": opp_id})
+        completed_dates.append((date_str, ymd))
 
-    if not completed:
+    if not completed_dates:
         return None
-    completed.sort(key=lambda x: x["date"])
-    last_n = completed[-n:]
+    completed_dates.sort(key=lambda x: x[0])
+    last_n_dates = completed_dates[-n:]
 
     q1_for, q1_against = [], []
     h1_for, h1_against = [], []
 
-    for g in last_n:
+    for date_str, ymd in last_n_dates:
         try:
-            payload = espn_web_get("/summary", {"event": g["event_id"]})
+            payload = espn_site_get("/scoreboard", {"dates": ymd})
         except Exception:
             continue
-        own = _team_linescore_from_summary(payload, team_id)
-        opp = _team_linescore_from_summary(payload, g["opp_id"])
-        if own is None or opp is None:
-            continue
-        q1_for.append(own[0])
-        q1_against.append(opp[0])
-        h1_for.append(own[0] + own[1])
-        h1_against.append(opp[0] + opp[1])
+        for ev in payload.get("events", []):
+            comp = ev.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            own_c = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+            opp_c = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+            if not own_c or not opp_c:
+                continue
+            own = _team_linescore_from_scoreboard_competitor(own_c)
+            opp = _team_linescore_from_scoreboard_competitor(opp_c)
+            if own is None or opp is None:
+                continue
+            q1_for.append(own[0])
+            q1_against.append(opp[0])
+            h1_for.append(own[0] + own[1])
+            h1_against.append(opp[0] + opp[1])
+            break
 
     if not q1_for:
         return None
@@ -4113,3 +4154,17 @@ if __name__ == "__main__":
               "STAT_KEY_ALIASES/FGA_COMBINED_ALIASES likely doesn't match what ESPN actually returns. "
               "This fails silently (no crash) so it's easy to miss - check a raw gamelog response's "
               "stat field names and update the fga aliases if needed.")
+
+    games_with_period_data = sum(
+        1 for g in report
+        if g.get("period_spreads", {}).get("first_half") and
+        any(s.get("home_cover_prob") is not None for s in g["period_spreads"]["first_half"])
+    )
+    print(f"  First half/quarter data available for {games_with_period_data}/{len(report)} games.")
+    if len(report) > 0 and games_with_period_data == 0:
+        print("  WARNING: no first half/quarter data on any game - _team_linescore_from_summary is not "
+              "matching ESPN's actual linescores field structure in the /summary boxscore response, or "
+              "get_team_period_scoring is failing to fetch/parse box scores for every recent game. "
+              "This fails silently (no crash), same pattern as the FGA warning above - check a raw "
+              "/summary?event= response's boxscore.teams[].linescores structure and confirm the value "
+              "field name matches what _team_linescore_from_summary expects.")
