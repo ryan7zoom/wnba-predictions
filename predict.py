@@ -2705,6 +2705,15 @@ CLOSE_CALL_WINDOW = 2
 # comfortable pick.
 THIN_MARGIN_RATIO = 0.4
 
+# Cold night miss check now scales with the size of the threshold itself,
+# rather than a flat point gap. A flat gap (e.g. "missed by 5") flags
+# almost every player on almost every line, since one bad shooting game
+# in a 10-game sample is normal, not rare. Scaling by the threshold means
+# missing a 12+ mark by 5 (a big relative miss) gets flagged, while
+# missing a 25+ mark by 5 (a smaller relative miss for a high-volume
+# scorer) does not.
+COLD_NIGHT_MISS_RATIO = 0.35
+
 
 def _closest_call_margin(games, stat_key, threshold):
     """
@@ -2716,6 +2725,10 @@ def _closest_call_margin(games, stat_key, threshold):
     still be a bad bet if most of those clears were by 1-2 points - one
     slightly-worse shooting night and she misses. This function is what
     catches that, instead of only looking at the hit rate number.
+
+    This only looks at games where she cleared the mark. It says nothing
+    about how bad her missed games were, that is what
+    _cold_night_floor_check covers separately.
     """
     values = []
     for g in games:
@@ -2729,6 +2742,88 @@ def _closest_call_margin(games, stat_key, threshold):
         "close_calls": close_calls,
         "games_checked": len(values),
         "worst_game": min(values),
+    }
+
+
+def _cold_night_floor_check(games, stat_key, threshold):
+    """
+    Real miss check, separate from the close-call check above. A hit
+    rate can look great (100% of last 10) while still hiding a bad cold
+    shooting night buried in the sample, since a good hit rate only
+    needs most games to clear the mark, not all of them.
+
+    The miss is only flagged if her worst recent game fell short by
+    COLD_NIGHT_MISS_RATIO or more of the threshold itself (relative, not
+    a flat point gap), so a small relative miss on a high-volume line
+    does not get treated the same as a real collapse on a low one.
+    """
+    values = []
+    for g in games:
+        v = _extract_stat_value(g, stat_key)
+        values.append(v if v is not None else 0.0)
+    if not values or threshold <= 0:
+        return None
+
+    worst = min(values)
+    shortfall = threshold - worst
+    shortfall_ratio = shortfall / threshold
+    had_real_miss = shortfall_ratio >= COLD_NIGHT_MISS_RATIO
+    return {
+        "worst_game": worst,
+        "shortfall": shortfall,
+        "shortfall_ratio": round(shortfall_ratio, 3),
+        "had_real_miss": had_real_miss,
+        "games_checked": len(values),
+    }
+
+
+def _efficiency_floor_check(games, stat_key, points_threshold):
+    """
+    Points-only efficiency check. Looks at makes-per-attempt on her
+    worst-efficiency recent game, not just whether she hit the points
+    mark, since a player can hit a points mark on pure volume (a lot of
+    shots) while shooting very poorly, and that poor shooting is a real
+    signal even on nights the points mark happened to still get hit.
+
+    Needs both points and fga (field goals attempted) on the same game
+    to compute a shooting percentage. Returns None if fga data was not
+    found for any games (undocumented API, field-name dependent) or
+    stat_key is not points.
+    """
+    if stat_key != "points":
+        return None
+
+    game_efficiencies = []
+    for g in games:
+        pts = _extract_stat_value(g, "points")
+        fga = _extract_stat_value(g, "fga")
+        if pts is None or fga is None or fga <= 0:
+            continue
+        game_efficiencies.append({"pts": pts, "fga": fga, "fg_pct": pts / (2 * fga)})
+        # rough makes estimate from points assumes a mix of 2s, so pts /
+        # (2 * fga) is a conservative floor on true FG%, not an exact
+        # make count, since points includes free throws and threes too.
+        # Used only as a relative comparison across her own games, not
+        # presented as her real shooting percentage.
+
+    if len(game_efficiencies) < 3:
+        return None
+
+    worst_eff_game = min(game_efficiencies, key=lambda x: x["fg_pct"])
+    avg_fg_pct = sum(g["fg_pct"] for g in game_efficiencies) / len(game_efficiencies)
+
+    is_volume_carried = (
+        worst_eff_game["fg_pct"] < avg_fg_pct * 0.5
+        and worst_eff_game["pts"] >= points_threshold
+    )
+
+    return {
+        "worst_pts": worst_eff_game["pts"],
+        "worst_fga": worst_eff_game["fga"],
+        "avg_fg_pct": round(avg_fg_pct, 3),
+        "worst_fg_pct": round(worst_eff_game["fg_pct"], 3),
+        "is_volume_carried": is_volume_carried,
+        "games_checked": len(game_efficiencies),
     }
 
 
@@ -2817,6 +2912,34 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                                 )
                             else:
                                 reasons.append("usually clears this with real room to spare, not just barely")
+
+                        # Cold night check: separate from the close-call
+                        # check above, this looks at whether her single
+                        # worst recent game missed the mark by a real
+                        # relative margin, which a high hit rate alone
+                        # can hide.
+                        cold_check = _cold_night_floor_check(recent_games, stat_key, best["threshold"])
+                        if cold_check and cold_check["had_real_miss"]:
+                            is_thin_margin = True
+                            reasons.append(
+                                f"COLD NIGHT RISK: her worst game in this sample was {cold_check['worst_game']:g} "
+                                f"{stat_label}, {cold_check['shortfall']:g} short of this mark"
+                            )
+
+                        # Efficiency check, points only: was her points
+                        # mark ever hit mainly on volume (a lot of shots,
+                        # low shooting percentage) rather than efficient
+                        # scoring? A points total alone cannot tell that
+                        # story, since a cold shooting night can still
+                        # clear a points mark if she just keeps shooting.
+                        eff_check = _efficiency_floor_check(recent_games, stat_key, best["threshold"])
+                        if eff_check and eff_check["is_volume_carried"]:
+                            is_thin_margin = True
+                            reasons.append(
+                                f"EFFICIENCY RISK: her worst shooting game in this sample was "
+                                f"{eff_check['worst_pts']:g} points on {eff_check['worst_fga']:g} shots, "
+                                f"carried by volume, not efficiency"
+                            )
 
                     vs_opp = p.get("vs_opponent")
                     if vs_opp and vs_opp.get("games"):
