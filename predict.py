@@ -269,6 +269,62 @@ MISMATCH_RANK_CUTOFF = 5  # WNBA has ~15 teams, so "bottom half" (7-8) is
 # worth a warning. Shared with TOP_TIER_RANK_CUTOFF above by design (same
 # cutoff, used in two different places).
 
+FATIGUE_STREAK_GAMES = 4  # how many most-recent completed games to check for a top-5 streak
+
+def build_fatigue_warning(team_id, team_full, schedule_events, league_rankings,
+                           streak_len=FATIGUE_STREAK_GAMES, top_cutoff=TOP_TIER_RANK_CUTOFF):
+    """
+    One-line fatigue flag: has this team played `streak_len` top-`top_cutoff`
+    opponents (by def_rank; a top-5 defense is still a hard, grinding game
+    even if we don't have a combined-strength number) in a row, in their
+    last `streak_len` completed games?
+
+    This is purely a schedule-difficulty signal, not modeled into any of
+    the probability math above - just a plain-language note that combined
+    scoring/props on this team might be softer than the model implies
+    because they've been grinding through a brutal stretch.
+
+    Returns a string warning, or None if data is missing or the streak
+    isn't there.
+    """
+    if not schedule_events or not league_rankings:
+        return None
+
+    completed = []
+    for e in schedule_events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+        if not opponent:
+            continue
+        opp_id = opponent.get("team", {}).get("id")
+        opp_name = opponent.get("team", {}).get("displayName") or opponent.get("team", {}).get("name")
+        if not opp_id:
+            continue
+        completed.append({"date": e.get("date", ""), "opp_id": opp_id, "opp_name": opp_name})
+
+    if len(completed) < streak_len:
+        return None
+
+    completed.sort(key=lambda x: x["date"])
+    last_n = completed[-streak_len:]
+
+    opp_names = []
+    for g in last_n:
+        rank = league_rankings.get(str(g["opp_id"]))
+        if not rank or rank.get("def_rank") is None:
+            return None
+        if rank["def_rank"] > top_cutoff:
+            return None
+        opp_names.append(g["opp_name"] or "a top opponent")
+
+    return (f"FATIGUE WATCH: {team_full} has faced a top-{top_cutoff} defense in each of their last "
+            f"{streak_len} games ({', '.join(opp_names)}) - combined scoring and player props may run "
+            f"under the model's numbers if the grind has caught up with them.")
+
+
 def build_matchup_mismatch_warnings(team_full, opp_full, team_rank, opp_rank):
     """
     Flags a real top-vs-bottom mismatch between one team's offense and the
@@ -2459,6 +2515,16 @@ def build_report():
             g["away_team_name"], g["home_team_name"],
             league_rankings.get(str(away_id)), league_rankings.get(str(home_id)))
 
+        # Fatigue watch (#played top-5 opponents in a row): checked for
+        # both teams independently, each using its own schedule events.
+        fatigue_warnings = []
+        home_fatigue = build_fatigue_warning(home_id, g["home_team_name"], home_schedule_events, league_rankings)
+        if home_fatigue:
+            fatigue_warnings.append(home_fatigue)
+        away_fatigue = build_fatigue_warning(away_id, g["away_team_name"], away_schedule_events, league_rankings)
+        if away_fatigue:
+            fatigue_warnings.append(away_fatigue)
+
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
             "home_team": g["home_team_abbr"],
@@ -2474,6 +2540,7 @@ def build_report():
             "home_team_split": get_team_home_away_split(home_id),
             "away_team_split": get_team_home_away_split(away_id),
             "mismatch_warnings": mismatch_warnings,
+            "fatigue_warnings": fatigue_warnings,
             "absentee_warnings": [],
             "spread_lines": [],
             "moneyline": None,
@@ -3233,6 +3300,10 @@ def _render_matchup_summary(game_report):
 
     mismatch_warnings = game_report.get("mismatch_warnings") or []
     for w in mismatch_warnings:
+        lines.append(w)
+
+    fatigue_warnings = game_report.get("fatigue_warnings") or []
+    for w in fatigue_warnings:
         lines.append(w)
 
     ml = game_report.get("moneyline")
