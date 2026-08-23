@@ -1765,6 +1765,120 @@ def get_recent_vs_opponent(athlete_id, opponent_team_id, season=SEASON, today_st
     return {"games": [g for _, g in recent_enough[:VS_OPPONENT_MAX_GAMES]], "reason": None}
 
 
+H2H_TOP_PERFORMERS_COUNT = 4  # top-N by points and by PRA, per h2h game
+H2H_MAX_GAMES_SHOWN = 4  # don't show more than this many past meetings,
+# even if the two teams have played a lot this season
+
+def get_team_h2h_events(home_team_id, away_team_id, season=SEASON):
+    """
+    Finds every completed game this season between these two specific
+    teams, using one team's own schedule (already fetched/cached via
+    get_team_schedule_events) filtered down to games where the opponent
+    was the other team. Returns a list of {"event_id", "date"} dicts,
+    most recent first, capped at H2H_MAX_GAMES_SHOWN.
+    """
+    events = get_team_schedule_events(home_team_id, season)
+    meetings = []
+    for e in events:
+        comp = e.get("competitions", [{}])[0]
+        if not comp.get("status", {}).get("type", {}).get("completed"):
+            continue
+        competitors = comp.get("competitors", [])
+        opponent = next(
+            (c for c in competitors if str(c.get("team", {}).get("id")) != str(home_team_id)), None
+        )
+        if not opponent or str(opponent.get("team", {}).get("id")) != str(away_team_id):
+            continue
+        meetings.append({"event_id": e.get("id"), "date": e.get("date", "")})
+
+    meetings.sort(key=lambda m: m["date"], reverse=True)
+    return meetings[:H2H_MAX_GAMES_SHOWN]
+
+
+def _boxscore_player_lines(event_id):
+    """
+    Returns every player who appeared in a single completed game's box
+    score, with team id/abbr and points/rebounds/assists/pra for that one
+    game. Uses the same /summary boxscore shape as get_team_starters and
+    _team_boxscore_totals. Returns an empty list if the box score can't
+    be fetched or has no player stats for some reason, rather than
+    guessing.
+    """
+    try:
+        payload = espn_web_get("/summary", {"event": event_id})
+    except Exception:
+        return []
+
+    lines = []
+    for team_box in payload.get("boxscore", {}).get("players", []):
+        team_id = str(team_box.get("team", {}).get("id") or "")
+        team_abbr = team_box.get("team", {}).get("abbreviation")
+        for stat_group in team_box.get("statistics", []):
+            for athlete_entry in stat_group.get("athletes", []):
+                athlete = athlete_entry.get("athlete", {})
+                name = athlete.get("displayName") or athlete.get("fullName")
+                if not name:
+                    continue
+                pts = _extract_stat_value(athlete_entry, "points")
+                reb = _extract_stat_value(athlete_entry, "rebounds")
+                ast = _extract_stat_value(athlete_entry, "assists")
+                pra = None
+                if pts is not None and reb is not None and ast is not None:
+                    pra = pts + reb + ast
+                lines.append({
+                    "name": name,
+                    "team_id": team_id,
+                    "team_abbr": team_abbr,
+                    "points": pts,
+                    "rebounds": reb,
+                    "assists": ast,
+                    "pra": pra,
+                })
+    return lines
+
+
+def get_h2h_top_performers(home_team_id, away_team_id, home_abbr, away_abbr, season=SEASON):
+    """
+    For every completed meeting this season between these two teams,
+    fetches that game's box score and ranks every player who played by
+    points and separately by PRA (points+rebounds+assists), top
+    H2H_TOP_PERFORMERS_COUNT each, from BOTH teams together (not split by
+    side) - this is "who actually showed up in this matchup", not a
+    per-team prop projection.
+
+    Returns a list of games, most recent first:
+      [{"date": "YYYY-MM-DD" or None, "event_id": ...,
+        "top_points": [{"name","team_abbr","value"}, ...],
+        "top_pra": [{"name","team_abbr","value"}, ...]}, ...]
+    Returns an empty list if the teams haven't met yet this season, or if
+    no box score data could be found for any of their meetings.
+    """
+    meetings = get_team_h2h_events(home_team_id, away_team_id, season)
+    results = []
+    for m in meetings:
+        lines = _boxscore_player_lines(m["event_id"])
+        if not lines:
+            continue
+
+        by_points = sorted(
+            (l for l in lines if l["points"] is not None),
+            key=lambda l: l["points"], reverse=True
+        )[:H2H_TOP_PERFORMERS_COUNT]
+        by_pra = sorted(
+            (l for l in lines if l["pra"] is not None),
+            key=lambda l: l["pra"], reverse=True
+        )[:H2H_TOP_PERFORMERS_COUNT]
+
+        date_str = m["date"][:10] if m.get("date") else None
+        results.append({
+            "date": date_str,
+            "event_id": m["event_id"],
+            "top_points": [{"name": l["name"], "team_abbr": l["team_abbr"], "value": l["points"]} for l in by_points],
+            "top_pra": [{"name": l["name"], "team_abbr": l["team_abbr"], "value": l["pra"]} for l in by_pra],
+        })
+    return results
+
+
 # ---------- player prop floors ----------
 
 def get_player_recent_gamelog(athlete_id, season=SEASON, last_n=PROP_GAMES_SAMPLE, all_games=False):
@@ -2525,6 +2639,12 @@ def build_report():
         if away_fatigue:
             fatigue_warnings.append(away_fatigue)
 
+        # H2H top performers: box scores of every meeting these two teams
+        # have already played this season, ranked by points and PRA. Pure
+        # lookup, no modeling - lets the person see what actually happened
+        # last time without leaving this page.
+        h2h_games = get_h2h_top_performers(home_id, away_id, g["home_team_abbr"], g["away_team_abbr"])
+
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
             "home_team": g["home_team_abbr"],
@@ -2548,6 +2668,7 @@ def build_report():
             "period_spreads": {"first_half": [], "first_quarter": []},
             "home_players": home_props,
             "away_players": away_props,
+            "h2h_games": h2h_games,
         }
 
         # Absentee-aware margin adjustment. Instead of a flat penalty for
@@ -3263,6 +3384,48 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
     return games[:limit]
 
 
+def _render_h2h_top_performers(game_report):
+    """
+    Renders the "Head-to-Head" block for a Bet Builder card: one mini
+    section per meeting these two teams have already played this season,
+    each showing the top performers from THAT game by points and by PRA.
+    Returns "" if the teams haven't played yet this season (nothing to
+    show, not an error).
+    """
+    h2h_games = game_report.get("h2h_games") or []
+    if not h2h_games:
+        return ""
+
+    def _row(entry):
+        return f'<li>{entry["name"]} <span class="h2h-team-tag">({entry["team_abbr"]})</span> - {entry["value"]:g}</li>'
+
+    game_blocks = []
+    for h in h2h_games:
+        date_label = h["date"] or "date unknown"
+        points_html = "".join(_row(e) for e in h["top_points"]) or "<li>No data</li>"
+        pra_html = "".join(_row(e) for e in h["top_pra"]) or "<li>No data</li>"
+        game_blocks.append(f"""
+          <div class="h2h-game">
+            <p class="h2h-game-date">{date_label}</p>
+            <div class="h2h-stat-cols">
+              <div class="h2h-stat-col">
+                <p class="h2h-stat-label">Top Points</p>
+                <ul class="h2h-list">{points_html}</ul>
+              </div>
+              <div class="h2h-stat-col">
+                <p class="h2h-stat-label">Top PRA</p>
+                <ul class="h2h-list">{pra_html}</ul>
+              </div>
+            </div>
+          </div>""")
+
+    return f"""
+        <div class="h2h-section">
+          <h4 class="h2h-title">Head-to-Head This Season</h4>
+          {''.join(game_blocks)}
+        </div>"""
+
+
 def _render_matchup_summary(game_report):
     """
     Compact matchup-context block for the top of each Bet Builder game
@@ -3364,8 +3527,10 @@ def _render_top_picks(games):
     game_blocks = []
     for game in games:
         summary_html = ""
+        h2h_html = ""
         if game.get("game_report"):
             summary_html = _render_matchup_summary(game["game_report"])
+            h2h_html = _render_h2h_top_performers(game["game_report"])
 
         # Split picks by team, home team's group first. Full game total
         # picks aren't tied to either side (is_home is None for those), so
@@ -3411,6 +3576,7 @@ def _render_top_picks(games):
         </div>
         <div class="collapsible-body">
         {summary_html}
+        {h2h_html}
         {''.join(team_sections)}
         </div>
       </div>""")
@@ -4056,6 +4222,48 @@ h1 {{
   line-height: 1.5;
 }}
 .pick-reasons li {{ margin: 2px 0; }}
+
+.h2h-section {{
+  margin: 6px 0 14px;
+  padding: 10px 12px;
+  background: rgba(255,255,255,0.03);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+}}
+.h2h-title {{
+  font-size: 0.85em;
+  font-weight: 700;
+  margin: 0 0 8px;
+  color: var(--teal, #2dd4bf);
+}}
+.h2h-game {{ margin: 0 0 10px; }}
+.h2h-game:last-child {{ margin-bottom: 0; }}
+.h2h-game-date {{
+  font-size: 0.72em;
+  color: var(--text-dim, #8892a6);
+  margin: 0 0 4px;
+}}
+.h2h-stat-cols {{
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}}
+.h2h-stat-label {{
+  font-size: 0.7em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-dim, #8892a6);
+  margin: 0 0 2px;
+}}
+.h2h-list {{
+  margin: 0;
+  padding: 0 0 0 16px;
+  list-style: decimal;
+  font-size: 0.78em;
+  line-height: 1.5;
+}}
+.h2h-team-tag {{ color: var(--text-dim, #8892a6); }}
 
 .tab-nav {{
   display: grid;
