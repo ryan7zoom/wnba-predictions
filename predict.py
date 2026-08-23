@@ -1772,26 +1772,68 @@ H2H_MAX_GAMES_SHOWN = 4  # don't show more than this many past meetings,
 def get_team_h2h_events(home_team_id, away_team_id, season=SEASON):
     """
     Finds every completed game this season between these two specific
-    teams, using one team's own schedule (already fetched/cached via
-    get_team_schedule_events) filtered down to games where the opponent
-    was the other team. Returns a list of {"event_id", "date"} dicts,
-    most recent first, capped at H2H_MAX_GAMES_SHOWN.
-    """
-    events = get_team_schedule_events(home_team_id, season)
-    meetings = []
-    for e in events:
-        comp = e.get("competitions", [{}])[0]
-        if not comp.get("status", {}).get("type", {}).get("completed"):
-            continue
-        competitors = comp.get("competitors", [])
-        opponent = next(
-            (c for c in competitors if str(c.get("team", {}).get("id")) != str(home_team_id)), None
-        )
-        if not opponent or str(opponent.get("team", {}).get("id")) != str(away_team_id):
-            continue
-        meetings.append({"event_id": e.get("id"), "date": e.get("date", "")})
+    teams. Checks BOTH teams' own schedules (not just one side) and
+    unions the results by event id - belt-and-suspenders against any one
+    team's schedule feed being incomplete/stale for a given event, which
+    has been observed to cause real meetings to go undetected. Also
+    treats a game as "completed" if either the explicit completed flag OR
+    both teams have real numeric scores present, since the completed
+    flag has been unreliable on this feed for past meetings even when
+    final scores are clearly there.
 
-    meetings.sort(key=lambda m: m["date"], reverse=True)
+    Returns a list of dicts, most recent first, capped at
+    H2H_MAX_GAMES_SHOWN:
+      {"event_id", "date", "home_abbr", "home_score", "away_abbr",
+       "away_score"}
+    where "home"/"away" here reflect who was actually home in THAT game
+    (not necessarily today's home team).
+    """
+    def _score(competitor):
+        raw = competitor.get("score")
+        if isinstance(raw, dict):
+            raw = raw.get("value", raw.get("displayValue"))
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    meetings_by_event = {}
+    for team_id, other_id in ((home_team_id, away_team_id), (away_team_id, home_team_id)):
+        try:
+            events = get_team_schedule_events(team_id, season)
+        except Exception:
+            continue
+        for e in events:
+            comp = e.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            this_c = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
+            other_c = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(other_id)), None)
+            if not this_c or not other_c:
+                continue
+
+            this_score = _score(this_c)
+            other_score = _score(other_c)
+            is_completed = comp.get("status", {}).get("type", {}).get("completed")
+            has_final_scores = this_score is not None and other_score is not None
+            if not (is_completed or has_final_scores):
+                continue
+
+            home_c = next((c for c in competitors if c.get("homeAway") == "home"), this_c)
+            away_c = next((c for c in competitors if c.get("homeAway") == "away"), other_c)
+
+            event_id = e.get("id")
+            if not event_id or event_id in meetings_by_event:
+                continue
+            meetings_by_event[event_id] = {
+                "event_id": event_id,
+                "date": e.get("date", ""),
+                "home_abbr": home_c.get("team", {}).get("abbreviation"),
+                "home_score": _score(home_c),
+                "away_abbr": away_c.get("team", {}).get("abbreviation"),
+                "away_score": _score(away_c),
+            }
+
+    meetings = sorted(meetings_by_event.values(), key=lambda m: m["date"], reverse=True)
     return meetings[:H2H_MAX_GAMES_SHOWN]
 
 
@@ -1840,25 +1882,28 @@ def _boxscore_player_lines(event_id):
 def get_h2h_top_performers(home_team_id, away_team_id, home_abbr, away_abbr, season=SEASON):
     """
     For every completed meeting this season between these two teams,
-    fetches that game's box score and ranks every player who played by
-    points and separately by PRA (points+rebounds+assists), top
-    H2H_TOP_PERFORMERS_COUNT each, from BOTH teams together (not split by
-    side) - this is "who actually showed up in this matchup", not a
-    per-team prop projection.
+    returns the final scoreline plus (when box score data is available)
+    that game's top performers by points and separately by PRA
+    (points+rebounds+assists), top H2H_TOP_PERFORMERS_COUNT each, from
+    BOTH teams together - this is "who actually showed up in this
+    matchup", not a per-team prop projection.
+
+    The scoreline always comes from the schedule event itself (already
+    fetched, reliable), so it's shown even on the rare game where the box
+    score endpoint has no player data - "no player box score" should
+    never mean "we show nothing about this game."
 
     Returns a list of games, most recent first:
       [{"date": "YYYY-MM-DD" or None, "event_id": ...,
+        "home_abbr", "home_score", "away_abbr", "away_score",
         "top_points": [{"name","team_abbr","value"}, ...],
         "top_pra": [{"name","team_abbr","value"}, ...]}, ...]
-    Returns an empty list if the teams haven't met yet this season, or if
-    no box score data could be found for any of their meetings.
+    Returns an empty list if the teams haven't met yet this season.
     """
     meetings = get_team_h2h_events(home_team_id, away_team_id, season)
     results = []
     for m in meetings:
         lines = _boxscore_player_lines(m["event_id"])
-        if not lines:
-            continue
 
         by_points = sorted(
             (l for l in lines if l["points"] is not None),
@@ -1873,6 +1918,10 @@ def get_h2h_top_performers(home_team_id, away_team_id, home_abbr, away_abbr, sea
         results.append({
             "date": date_str,
             "event_id": m["event_id"],
+            "home_abbr": m["home_abbr"],
+            "home_score": m["home_score"],
+            "away_abbr": m["away_abbr"],
+            "away_score": m["away_score"],
             "top_points": [{"name": l["name"], "team_abbr": l["team_abbr"], "value": l["points"]} for l in by_points],
             "top_pra": [{"name": l["name"], "team_abbr": l["team_abbr"], "value": l["pra"]} for l in by_pra],
         })
@@ -3402,11 +3451,15 @@ def _render_h2h_top_performers(game_report):
     game_blocks = []
     for h in h2h_games:
         date_label = h["date"] or "date unknown"
-        points_html = "".join(_row(e) for e in h["top_points"]) or "<li>No data</li>"
-        pra_html = "".join(_row(e) for e in h["top_pra"]) or "<li>No data</li>"
-        game_blocks.append(f"""
-          <div class="h2h-game">
-            <p class="h2h-game-date">{date_label}</p>
+
+        score_label = ""
+        if h.get("home_score") is not None and h.get("away_score") is not None:
+            score_label = f'<p class="h2h-scoreline">{h["away_abbr"]} {h["away_score"]:g} @ {h["home_abbr"]} {h["home_score"]:g}</p>'
+
+        if h["top_points"] or h["top_pra"]:
+            points_html = "".join(_row(e) for e in h["top_points"]) or "<li>No data</li>"
+            pra_html = "".join(_row(e) for e in h["top_pra"]) or "<li>No data</li>"
+            stats_html = f"""
             <div class="h2h-stat-cols">
               <div class="h2h-stat-col">
                 <p class="h2h-stat-label">Top Points</p>
@@ -3416,7 +3469,15 @@ def _render_h2h_top_performers(game_report):
                 <p class="h2h-stat-label">Top PRA</p>
                 <ul class="h2h-list">{pra_html}</ul>
               </div>
-            </div>
+            </div>"""
+        else:
+            stats_html = '<p class="h2h-no-player-data">Player box score not available for this game.</p>'
+
+        game_blocks.append(f"""
+          <div class="h2h-game">
+            <p class="h2h-game-date">{date_label}</p>
+            {score_label}
+            {stats_html}
           </div>""")
 
     return f"""
@@ -4262,6 +4323,17 @@ h1 {{
   list-style: decimal;
   font-size: 0.78em;
   line-height: 1.5;
+}}
+.h2h-scoreline {{
+  font-size: 0.85em;
+  font-weight: 700;
+  margin: 0 0 6px;
+}}
+.h2h-no-player-data {{
+  font-size: 0.75em;
+  color: var(--text-dim, #8892a6);
+  margin: 0;
+  font-style: italic;
 }}
 .h2h-team-tag {{ color: var(--text-dim, #8892a6); }}
 
