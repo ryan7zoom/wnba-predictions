@@ -27,6 +27,176 @@ import urllib.parse
 import urllib.error
 import os
 
+
+# ---------- Bayesian shrinkage / opponent adjustment / minutes projection ----------
+#
+# These replace the old bonus-stacking approach (H2H bonus + opponent
+# recent-defense bonus + weak-D bonus, etc.) with a statistically cleaner
+# treatment given the data actually available (current season only, no
+# historical DB): shrink small-sample hit-rates toward the league average
+# (Bayesian shrinkage), adjust for the specific opponent using season-long
+# team defensive numbers (not noisy last-5 blips), and project minutes so a
+# threshold reflects the role she's playing in *now*, not her whole-season
+# average role.
+
+def compute_league_avg_hit_rate(all_players, stat_key):
+    """
+    Average raw hit-rate on the MEDIUM threshold for stat_key, across every
+    starter in the current report run with >= 3 sampled games. Used as the
+    shrinkage target in bayesian_shrinkage - pulls any one player's small
+    recent-games sample toward what's typical leaguewide for this stat,
+    rather than trusting a handful of games at face value.
+
+    all_players: list of player dicts as returned by get_player_props,
+    each with "floors" (raw, pre-shrinkage) and "games_sampled".
+    Returns 0.5 if no qualifying players are found (a neutral prior).
+    """
+    rates = []
+    for p in all_players:
+        if p.get("games_sampled", 0) < 3:
+            continue
+        floors = p.get("floors", {}).get(stat_key, {})
+        if not floors:
+            continue
+        sorted_thresholds = sorted(floors.keys())
+        idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
+        medium_t = sorted_thresholds[idx]
+        hr = floors.get(medium_t)
+        if hr is not None:
+            rates.append(hr)
+    if not rates:
+        return 0.5
+    return sum(rates) / len(rates)
+
+
+def bayesian_shrinkage(hits, games, league_avg, k=8):
+    """
+    Shrinks an empirical hit-rate (hits/games) toward league_avg, weighted
+    by k "pseudo-games" of the league average. Small samples (games << k)
+    end up close to league_avg; large samples (games >> k) end up close to
+    the raw rate. Standard Bayesian-beta-style shrinkage using a simple
+    pseudo-count formulation (no external stats dependency needed).
+    """
+    if games + k <= 0:
+        return league_avg
+    return (hits + league_avg * k) / (games + k)
+
+
+def project_minutes(recent_games):
+    """
+    Weighted-average projected minutes from a player's recent games
+    (newest last, matching the ordering get_player_recent_gamelog already
+    returns). Newest game gets weight 5, then 4, 3, 2, 1 for up to 5 games
+    (oldest of the 5 gets weight 1). If fewer than 5 games have minutes
+    data, weights evenly instead of trying to stretch the 5-weight scheme
+    over a shorter list.
+
+    Returns None if no minutes data was found at all.
+    """
+    minutes_vals = [v for v in (_extract_stat_value(g, "minutes") for g in recent_games) if v is not None]
+    if not minutes_vals:
+        return None
+
+    last5 = minutes_vals[-5:]
+    n = len(last5)
+    if n == 5:
+        weights = [1, 2, 3, 4, 5]  # oldest -> newest, so last5[-1] (newest) gets 5
+    else:
+        weights = [1] * n  # even weighting when fewer than 5 games available
+
+    total_weight = sum(weights)
+    if total_weight == 0:
+        return None
+    weighted_sum = sum(v * w for v, w in zip(last5, weights))
+    return weighted_sum / total_weight
+
+
+def opponent_adjustment(stat_key, raw_prob, opponent_team_id, team_stats_cache):
+    """
+    Adjusts raw_prob (already shrunk via bayesian_shrinkage) for the
+    specific opponent, using season-long team numbers cached in
+    team_stats_cache ({team_id: {"pts_pg", "pts_allowed_pg",
+    "reb_allowed_pg", "ast_allowed_pg"}}) rather than a noisy last-5-game
+    read.
+
+    For points: compares the opponent's points-allowed-per-game to the
+    league average points-allowed-per-game across every team in the
+    cache, and multiplies raw_prob by (1 + 0.4 * pct_diff), capped at
+    +/-15%.
+
+    For rebounds/assists (and pra, treated as a blend of both): same
+    formula using the opponent's rebounds_allowed_pg / assists_allowed_pg.
+    For threes, or if the opponent isn't in the cache, returns raw_prob
+    unchanged (no adjustment - not enough of a defensive signal for that
+    stat with only current-season box scores).
+    """
+    if raw_prob is None or not team_stats_cache:
+        return raw_prob
+    opp_stats = team_stats_cache.get(opponent_team_id) or team_stats_cache.get(str(opponent_team_id))
+    if not opp_stats:
+        return raw_prob
+
+    if stat_key == "points":
+        league_field, opp_field = "pts_allowed_pg", "pts_allowed_pg"
+    elif stat_key == "rebounds":
+        league_field, opp_field = "reb_allowed_pg", "reb_allowed_pg"
+    elif stat_key == "assists":
+        league_field, opp_field = "ast_allowed_pg", "ast_allowed_pg"
+    elif stat_key == "pra":
+        # Blend: average the points/rebounds/assists-allowed pct diffs so
+        # a combined stat gets a combined (not double-counted) adjustment.
+        pct_diffs = []
+        for field in ("pts_allowed_pg", "reb_allowed_pg", "ast_allowed_pg"):
+            vals = [v.get(field) for v in team_stats_cache.values() if v.get(field) is not None]
+            if not vals or opp_stats.get(field) is None:
+                continue
+            league_avg = sum(vals) / len(vals)
+            if league_avg:
+                pct_diffs.append((opp_stats[field] - league_avg) / league_avg)
+        if not pct_diffs:
+            return raw_prob
+        pct_diff = sum(pct_diffs) / len(pct_diffs)
+        adj_factor = max(-0.15, min(0.15, 0.4 * pct_diff))
+        return max(0.0, min(1.0, raw_prob * (1 + adj_factor)))
+    else:
+        return raw_prob  # threes: no reliable opponent-allowed signal here
+
+    vals = [v.get(league_field) for v in team_stats_cache.values() if v.get(league_field) is not None]
+    if not vals or opp_stats.get(opp_field) is None:
+        return raw_prob
+    league_avg = sum(vals) / len(vals)
+    if not league_avg:
+        return raw_prob
+    pct_diff = (opp_stats[opp_field] - league_avg) / league_avg
+    adj_factor = max(-0.15, min(0.15, 0.4 * pct_diff))
+    return max(0.0, min(1.0, raw_prob * (1 + adj_factor)))
+
+
+def usage_boost_if_starter_out(player_name, team_id, missing_names, starters_usage_rank):
+    """
+    If any teammate in missing_names is one of the team's top-2 scorers
+    (usage rank 1 or 2 among starters), boosts this player's floors by 12%
+    (remaining starters absorb more shots/usage). Rank 3 gets a smaller
+    7% boost. Otherwise no boost (1.0). player_name/team_id aren't used to
+    filter here (the boost applies to every remaining starter equally) but
+    are kept in the signature for a clear call-site and future per-player
+    refinement.
+    """
+    if not missing_names or not starters_usage_rank:
+        return 1.0
+    best_rank = None
+    for name in missing_names:
+        rank = starters_usage_rank.get(name)
+        if rank is not None and (best_rank is None or rank < best_rank):
+            best_rank = rank
+    if best_rank is None:
+        return 1.0
+    if best_rank <= 2:
+        return 1.12
+    if best_rank == 3:
+        return 1.07
+    return 1.0
+
 # The scoreboard's "today" is computed from local time at a fixed UTC+6
 # offset, rather than raw UTC, so late-evening runs still pull the games
 # still upcoming locally rather than jumping ahead to the next UTC calendar
@@ -71,30 +241,15 @@ MEDIUM_THRESHOLD_INDEX = 1
 TOP_PERFORMERS_COUNT = 10
 TOP_PERFORMERS_MIN_GAMES = 5  # don't rank anyone with too small a sample
 
-CONFIDENCE_THRESHOLD = 0.80  # only picks at/above this become eligible for bet builders
+CONFIDENCE_THRESHOLD = 0.72  # only picks at/above this become eligible for bet builders
+# (raised from a raw-hit-rate-era 0.80 down to 0.72 - adjusted_floors values
+# are shrunk toward league average, so they're already more realistic /
+# less inflated by small-sample noise than the old raw hit rate was)
 TOP_PICKS_LIMIT = 8
 
 
 POINTS_STAT_KEY = "points"
 TREND_ONLY_STAT_KEYS = ("rebounds", "assists", "pra", "threes")
-
-# Weighting for the points ranking score below. Own hit-rate is the
-# foundation (a player has to actually be hitting the line); head-to-head
-# and opponent-defense are real but secondary signals layered on top, not
-# separate rankings of their own - a player with a great hit-rate but a
-# tough opponent should still generally outrank a mediocre hit-rate against
-# a weak opponent, so these are additive nudges (fractions of the hit-rate
-# scale), not multipliers that could flip the order entirely.
-POINTS_H2H_BONUS = 0.05          # hit the line in her most recent head-to-head
-POINTS_OPP_ALLOWING_BONUS = 0.05  # opponent's recent points-allowed trend is up (easier matchup)
-POINTS_OPP_WEAK_DEFENSE_BONUS = 0.05  # opponent ranks in the bottom half of the league defensively
-
-# Same idea, applied to rebounds/assists/pra now that they have real
-# opponent-allowed and own-offense data behind them instead of being
-# footnotes. Kept at the same weight as the points bonuses for consistency.
-TREND_H2H_BONUS = 0.05
-TREND_OPP_ALLOWING_BONUS = 0.05
-TREND_OWN_OFFENSE_BONUS = 0.05
 
 def best_line_at_confidence(p, min_confidence=0.85, stat_key=POINTS_STAT_KEY):
     """
@@ -122,82 +277,6 @@ def best_line_at_confidence(p, min_confidence=0.85, stat_key=POINTS_STAT_KEY):
     }
 
 
-def _points_score_for_player(p, side_label, side_full, opponent_full, g):
-    """
-    Builds the 4-factor points candidate for a single player, or None if
-    she doesn't have a qualifying points floor. The 4 factors:
-      1. Her own hit-rate on the medium points threshold (the base score)
-      2. Whether she hit that same line in her most recent head-to-head
-      3. Whether the opponent has recently been allowing more points than
-         their season average (a trending-easier matchup)
-      4. Whether the opponent ranks in the bottom half of the league on
-         defense over the last 10 games (a weak-defense matchup, not just
-         a recent blip)
-    Only points gets this treatment - rebounds/assists/threes don't have
-    opponent-allowed data behind them (see TREND_ONLY_STAT_KEYS below).
-    """
-    floors = p["floors"].get(POINTS_STAT_KEY, {})
-    if not floors:
-        return None
-    sorted_thresholds = sorted(floors.keys())
-    idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
-    medium_t = sorted_thresholds[idx]
-    hit_rate = floors.get(medium_t)
-    if hit_rate is None:
-        return None
-
-    score = hit_rate
-    reasons = []
-
-    # Factor 2: head-to-head
-    h2h_hit = False
-    vs_opp = p.get("vs_opponent")
-    if vs_opp and vs_opp.get("games"):
-        most_recent_vs_opp = vs_opp["games"][-1]
-        v = _extract_stat_value(most_recent_vs_opp, POINTS_STAT_KEY)
-        if v is not None and v >= medium_t:
-            h2h_hit = True
-            score += POINTS_H2H_BONUS
-            n_h2h = len(vs_opp["games"])
-            reasons.append(f"hit {medium_t}+ points in her last {'meeting' if n_h2h == 1 else f'{n_h2h} meetings'} vs {opponent_full}")
-
-    # Factor 3: opponent recently allowing more points than their own season average
-    opp_allowing_more = False
-    recent_def = p.get("opponent_recent_defense")
-    if recent_def and recent_def["pct_change"] > 0:
-        opp_allowing_more = True
-        score += POINTS_OPP_ALLOWING_BONUS
-        reasons.append(f"{opponent_full} has allowed {recent_def['pct_change'] * 100:.0f}% more points than "
-                        f"their season average over their last {recent_def['games_counted']} games")
-
-    # Factor 4: opponent's league-wide defensive rank, bottom half = weak D
-    opp_weak_defense = False
-    opp_rank = p.get("opponent_league_rank")
-    if opp_rank and opp_rank["teams_ranked"] >= 2:
-        if opp_rank["def_rank"] > (opp_rank["teams_ranked"] + 1) / 2:
-            opp_weak_defense = True
-            score += POINTS_OPP_WEAK_DEFENSE_BONUS
-            reasons.append(f"{opponent_full} ranks #{opp_rank['def_rank']} of {opp_rank['teams_ranked']} in defense "
-                            f"over the last 10 games")
-
-    return {
-        "name": p["name"],
-        "team": side_full,
-        "matchup": f"{side_full} vs {opponent_full}",
-        "opponent_full": opponent_full,
-        "stat_key": POINTS_STAT_KEY,
-        "threshold": medium_t,
-        "hit_rate": hit_rate,
-        "fair_odds": fair_decimal_odds(hit_rate, adjusted_score=score),
-        "score": round(score, 4),
-        "games_sampled": p["games_sampled"],
-        "vs_opp_aligned": h2h_hit,
-        "opp_allowing_more": opp_allowing_more,
-        "opp_weak_defense": opp_weak_defense,
-        "reasons": reasons,
-    }
-
-
 def fair_decimal_odds(hit_rate, adjusted_score=None):
     """Break-even decimal odds implied by our own probability - our number,
     not a bookmaker's, just for comparing against the real line.
@@ -218,51 +297,6 @@ def fair_decimal_odds(hit_rate, adjusted_score=None):
 
 
 TOP_TIER_RANK_CUTOFF = 5  # "top 5" / "bottom 5" - see note near MISMATCH_RANK_CUTOFF
-VS_TOP_DEFENSE_MIN_GAMES = 2  # need at least this many games vs top-tier D to say anything
-
-def build_vs_top_defense_note(games, league_rankings, medium_threshold, own_hit_rate):
-    """
-    Buckets this player's sampled games into "vs a top-TOP_TIER_RANK_CUTOFF
-    defense" vs the rest, using each game's actual opponent_team_id and
-    that opponent's CURRENT league defensive rank (a reasonable proxy - a
-    team that's elite defensively now was very likely comparable a few
-    games ago too). Compares her hit-rate on the medium points threshold
-    in that bucket to her overall hit-rate. Returns None if there's too
-    small a sample of top-defense games to say anything meaningful.
-    """
-    if not games or not league_rankings or medium_threshold is None:
-        return None
-
-    vs_top_defense_hits = 0
-    vs_top_defense_games = 0
-    for g in games:
-        opp_id = g.get("opponent_team_id")
-        if not opp_id:
-            continue
-        opp_rank = league_rankings.get(str(opp_id))
-        if not opp_rank:
-            continue
-        if opp_rank["def_rank"] <= TOP_TIER_RANK_CUTOFF:
-            v = _extract_stat_value(g, "points")
-            if v is None:
-                continue
-            vs_top_defense_games += 1
-            if v >= medium_threshold:
-                vs_top_defense_hits += 1
-
-    if vs_top_defense_games < VS_TOP_DEFENSE_MIN_GAMES:
-        return None
-
-    vs_top_defense_rate = vs_top_defense_hits / vs_top_defense_games
-    drop = own_hit_rate - vs_top_defense_rate if own_hit_rate is not None else None
-    return {
-        "games_vs_top_defense": vs_top_defense_games,
-        "hit_rate_vs_top_defense": round(vs_top_defense_rate, 3),
-        "overall_hit_rate": round(own_hit_rate, 3) if own_hit_rate is not None else None,
-        "drop": round(drop, 3) if drop is not None else None,
-        "is_notable_drop": drop is not None and drop >= 0.25,
-    }
-
 
 MISMATCH_RANK_CUTOFF = 5  # WNBA has ~15 teams, so "bottom half" (7-8) is
 # too loose to mean anything - top/bottom 5 is the tier that's actually
@@ -364,11 +398,12 @@ def build_matchup_mismatch_warnings(team_full, opp_full, team_rank, opp_rank):
 
 def build_top_points_performers(report):
     """
-    Points-only Top Performers list, scored on all 4 factors (own hit-rate,
-    head-to-head, opponent recent points-allowed trend, opponent
-    league-wide defensive rank) - see _points_score_for_player. This is
-    the strongest section since points is the only stat with real
-    opponent-defense data behind it.
+    Points-only Top Performers list, scored purely on the shrunk/adjusted
+    hit-rate for the medium points threshold (adjusted_floors). All the
+    old bonus logic (H2H, opponent-allowing-more, opponent weak-defense)
+    is gone - the opponent adjustment is already baked into adjusted_floors
+    via opponent_adjustment(), so layering more bonuses on top would be
+    double counting.
     """
     candidates = []
     for g in report:
@@ -379,9 +414,28 @@ def build_top_points_performers(report):
             for p in players:
                 if p["games_sampled"] < TOP_PERFORMERS_MIN_GAMES:
                     continue
-                candidate = _points_score_for_player(p, side_label, side_full, opponent_full, g)
-                if candidate:
-                    candidates.append(candidate)
+                floors = p["adjusted_floors"].get(POINTS_STAT_KEY, {})
+                if not floors:
+                    continue
+                sorted_thresholds = sorted(floors.keys())
+                idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
+                medium_t = sorted_thresholds[idx]
+                hit_rate = floors.get(medium_t)
+                if hit_rate is None:
+                    continue
+                candidates.append({
+                    "name": p["name"],
+                    "team": side_full,
+                    "matchup": f"{side_full} vs {opponent_full}",
+                    "opponent_full": opponent_full,
+                    "stat_key": POINTS_STAT_KEY,
+                    "threshold": medium_t,
+                    "hit_rate": hit_rate,
+                    "fair_odds": fair_decimal_odds(hit_rate),
+                    "score": round(hit_rate, 4),
+                    "games_sampled": p["games_sampled"],
+                    "reasons": [],
+                })
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     return candidates[:TOP_PERFORMERS_COUNT]
@@ -389,21 +443,11 @@ def build_top_points_performers(report):
 
 def build_top_trend_performers(report):
     """
-    Rebounds/assists/PRA/threes Top Performers list. Now scored the same
-    way as points: her own hit-rate is the foundation, with real bonuses
-    layered on top for:
-      - opponent allowing more of this stat than usual lately (only for
-        rebounds/assists/pra, which now have opponent-allowed data - see
-        get_team_recent_allowed_reb_ast)
-      - her own team's offense trending up recently (own_recent_offense)
-      - hitting the same mark in her most recent head-to-head
-    Threes still only gets the hit-rate + head-to-head factors, since
-    there's no reliable opponent-allowed-threes signal being tracked.
-
-    If the opponent's allowed-stat number is flagged volatile (swings a
-    lot game to game - see ALLOWED_STAT_VOLATILITY_RATIO), the bonus is
-    NOT applied even if the average looks favorable, since a volatile
-    average isn't a trustworthy signal for any single game.
+    Rebounds/assists/PRA/threes Top Performers list, scored purely on the
+    shrunk/adjusted hit-rate for each stat's medium threshold
+    (adjusted_floors). Picks each player's single best trend stat. All the
+    old bonus logic (opponent-allowed, own-offense-trending-up, H2H) is
+    gone - the opponent adjustment is already baked into adjusted_floors.
     """
     candidates = []
     for g in report:
@@ -416,7 +460,7 @@ def build_top_trend_performers(report):
                     continue
                 best_for_player = None
                 for stat_key in TREND_ONLY_STAT_KEYS:
-                    floors = p["floors"].get(stat_key, {})
+                    floors = p["adjusted_floors"].get(stat_key, {})
                     if not floors:
                         continue
                     sorted_thresholds = sorted(floors.keys())
@@ -425,61 +469,14 @@ def build_top_trend_performers(report):
                     hit_rate = floors.get(medium_t)
                     if hit_rate is None:
                         continue
-
-                    score = hit_rate
-                    reasons = []
-
-                    # Opponent-allowed bonus (rebounds/assists/pra only)
-                    opp_allowed_more = False
-                    allowed_note = p.get("opponent_allowed_reb_ast")
-                    if allowed_note and stat_key in ("rebounds", "assists", "pra"):
-                        if stat_key == "rebounds" and not allowed_note["rebounds_volatile"]:
-                            opp_allowed_more = True
-                        elif stat_key == "assists" and not allowed_note["assists_volatile"]:
-                            opp_allowed_more = True
-                        elif stat_key == "pra" and not allowed_note["rebounds_volatile"] and not allowed_note["assists_volatile"]:
-                            opp_allowed_more = True
-                        if opp_allowed_more:
-                            score += TREND_OPP_ALLOWING_BONUS
-                            reasons.append(
-                                f"{opponent_full} has been allowing {allowed_note['rebounds_allowed_pg']} reb "
-                                f"and {allowed_note['assists_allowed_pg']} ast per game lately"
-                            )
-
-                    # Own-team offense trending up (applies to all trend stats)
-                    own_off = p.get("own_recent_offense")
-                    if own_off and own_off.get("is_notable") and own_off["pct_change"] > 0:
-                        score += TREND_OWN_OFFENSE_BONUS
-                        reasons.append(
-                            f"{side_full} has scored {own_off['pct_change']*100:.0f}% more than their season "
-                            f"average over their last {own_off['games_counted']} games"
-                        )
-
-                    if best_for_player is None or score > best_for_player["score"]:
+                    if best_for_player is None or hit_rate > best_for_player["hit_rate"]:
                         best_for_player = {
                             "stat_key": stat_key,
                             "threshold": medium_t,
                             "hit_rate": hit_rate,
-                            "fair_odds": fair_decimal_odds(hit_rate, adjusted_score=score),
-                            "score": round(score, 4),
-                            "reasons": reasons,
                         }
                 if not best_for_player:
                     continue
-
-                vs_opp_aligned = False
-                vs_opp = p.get("vs_opponent")
-                if vs_opp and vs_opp.get("games"):
-                    most_recent_vs_opp = vs_opp["games"][-1]
-                    v = _extract_stat_value(most_recent_vs_opp, best_for_player["stat_key"])
-                    if v is not None and v >= best_for_player["threshold"]:
-                        vs_opp_aligned = True
-                        best_for_player["score"] += TREND_H2H_BONUS
-                        n_h2h = len(vs_opp["games"])
-                        best_for_player["reasons"].append(
-                            f"hit {best_for_player['threshold']}+ {STAT_DISPLAY_NAMES.get(best_for_player['stat_key'])} "
-                            f"in her last {'meeting' if n_h2h == 1 else f'{n_h2h} meetings'} vs {opponent_full}"
-                        )
 
                 candidates.append({
                     "name": p["name"],
@@ -489,10 +486,9 @@ def build_top_trend_performers(report):
                     "stat_key": best_for_player["stat_key"],
                     "threshold": best_for_player["threshold"],
                     "hit_rate": best_for_player["hit_rate"],
-                    "score": best_for_player["score"],
+                    "score": round(best_for_player["hit_rate"], 4),
                     "games_sampled": p["games_sampled"],
-                    "vs_opp_aligned": vs_opp_aligned,
-                    "reasons": best_for_player["reasons"],
+                    "reasons": [],
                 })
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -750,149 +746,6 @@ def get_team_season_stats(team_id, season=SEASON):
     }
 
 
-RECENT_DEFENSE_GAMES_SAMPLE = 5
-RECENT_DEFENSE_NOTABLE_PCT = 0.10  # flag when last-5 points-allowed is
-# 10%+ above (or below) the season average - same "plain fact, not a
-# weighted probability boost" pattern as the minutes-bump note.
-
-def get_team_recent_defense(team_id, season=SEASON):
-    """
-    Points allowed over this team's last RECENT_DEFENSE_GAMES_SAMPLE
-    completed games, using the same schedule-events source as
-    get_team_season_stats (no new requests - this is a filtering change,
-    not a new data source). Returns None if there aren't enough completed
-    games yet this season.
-    """
-    events = get_team_schedule_events(team_id, season)
-    completed = []
-    for e in events:
-        comp = e.get("competitions", [{}])[0]
-        if not comp.get("status", {}).get("type", {}).get("completed"):
-            continue
-        competitors = comp.get("competitors", [])
-        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
-        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
-        if not this_team or not opponent:
-            continue
-        try:
-            pts_against = int(opponent.get("score", {}).get("value", opponent.get("score")))
-        except (TypeError, ValueError):
-            continue
-        completed.append({"date": e.get("date", ""), "pts_against": pts_against})
-
-    if not completed:
-        return None
-    completed.sort(key=lambda x: x["date"])
-    last_n = completed[-RECENT_DEFENSE_GAMES_SAMPLE:]
-    if not last_n:
-        return None
-
-    recent_avg = sum(g["pts_against"] for g in last_n) / len(last_n)
-    return {
-        "recent_pts_allowed_pg": round(recent_avg, 1),
-        "games_counted": len(last_n),
-    }
-
-
-def build_recent_defense_note(recent_defense, season_stats, opponent_team_full=None):
-    """
-    Combines a team's recent (last-5) points-allowed with their season
-    average into a display-ready dict: both numbers, plus whether the
-    deviation is notable (10%+). Returns None if either input is missing,
-    or if there aren't enough games to make the comparison meaningful.
-    """
-    if not recent_defense or not season_stats:
-        return None
-    if recent_defense["games_counted"] < 2:
-        return None
-
-    recent = recent_defense["recent_pts_allowed_pg"]
-    season_avg = season_stats["pts_allowed_pg"]
-    if season_avg == 0:
-        return None
-
-    pct_change = (recent - season_avg) / season_avg
-    return {
-        "opponent_team_full": opponent_team_full,
-        "recent_pts_allowed_pg": recent,
-        "season_pts_allowed_pg": season_avg,
-        "games_counted": recent_defense["games_counted"],
-        "pct_change": round(pct_change, 3),
-        "is_notable": abs(pct_change) >= RECENT_DEFENSE_NOTABLE_PCT,
-    }
-
-
-# ---------- team's own recent scoring (mirror of recent defense above) ----------
-#
-# Same rationale as get_team_recent_defense: is this team's own scoring
-# trending above/below their season average lately? Useful both for team
-# total-points bets and as context for player props (a team scoring more
-# as a whole tends to lift individual player floors too).
-
-def get_team_recent_offense(team_id, season=SEASON):
-    """
-    Points scored over this team's last RECENT_DEFENSE_GAMES_SAMPLE
-    completed games. Reuses get_team_schedule_events (cached per run), so
-    this adds no new network calls beyond what's already fetched.
-    """
-    events = get_team_schedule_events(team_id, season)
-    completed = []
-    for e in events:
-        comp = e.get("competitions", [{}])[0]
-        if not comp.get("status", {}).get("type", {}).get("completed"):
-            continue
-        competitors = comp.get("competitors", [])
-        this_team = next((c for c in competitors if str(c.get("team", {}).get("id")) == str(team_id)), None)
-        if not this_team:
-            continue
-        try:
-            pts_for = int(this_team.get("score", {}).get("value", this_team.get("score")))
-        except (TypeError, ValueError):
-            continue
-        completed.append({"date": e.get("date", ""), "pts_for": pts_for})
-
-    if not completed:
-        return None
-    completed.sort(key=lambda x: x["date"])
-    last_n = completed[-RECENT_DEFENSE_GAMES_SAMPLE:]
-    if not last_n:
-        return None
-
-    recent_avg = sum(g["pts_for"] for g in last_n) / len(last_n)
-    return {
-        "recent_pts_for_pg": round(recent_avg, 1),
-        "games_counted": len(last_n),
-    }
-
-
-def build_recent_offense_note(recent_offense, season_stats, team_full=None):
-    """
-    Combines a team's recent (last-5) points-scored with their season
-    average, same shape/rules as build_recent_defense_note. team_full here
-    is the team's OWN name (not an opponent's) - this note describes what
-    a team itself is doing, so it's attached to that team's own players.
-    """
-    if not recent_offense or not season_stats:
-        return None
-    if recent_offense["games_counted"] < 2:
-        return None
-
-    recent = recent_offense["recent_pts_for_pg"]
-    season_avg = season_stats["pts_pg"]
-    if season_avg == 0:
-        return None
-
-    pct_change = (recent - season_avg) / season_avg
-    return {
-        "team_full": team_full,
-        "recent_pts_for_pg": recent,
-        "season_pts_for_pg": season_avg,
-        "games_counted": recent_offense["games_counted"],
-        "pct_change": round(pct_change, 3),
-        "is_notable": abs(pct_change) >= RECENT_DEFENSE_NOTABLE_PCT,
-    }
-
-
 # ---------- opponent-allowed rebounds & assists (team level) ----------
 #
 # Points-allowed above only needs each game's final score, which is on
@@ -943,55 +796,59 @@ def _team_boxscore_totals(team_id, event_id):
     return totals if totals["found"] else None
 
 
-def get_team_recent_allowed_reb_ast(team_id, season=SEASON, n=OPP_ALLOWED_GAMES_SAMPLE):
+def build_team_stats_cache(team_ids, season=SEASON, n=OPP_ALLOWED_GAMES_SAMPLE):
     """
-    For a team's last n completed games, fetches each game's box score and
-    sums the OPPONENT's rebounds/assists in that game - i.e. how many
-    rebounds/assists this team allowed. Also keeps the per-game values (not
-    just the average) so we can measure how much they swing game to game,
-    for the volatility flag below.
-
-    Returns None if no completed games with usable box scores were found.
+    Builds the {team_id: {"pts_pg", "pts_allowed_pg", "reb_allowed_pg",
+    "ast_allowed_pg"}} cache consumed by opponent_adjustment(). Points
+    numbers reuse get_team_season_stats (already-fetched schedule data,
+    no extra calls). Rebounds/assists-allowed reuse the box-score fetch
+    already proven in _team_boxscore_totals, over each team's last n
+    completed games - a real per-game fetch, so kept to a small sample
+    like the rest of this file's box-score-derived numbers.
     """
-    events = get_team_schedule_events(team_id, season)
-    completed = []
-    for e in events:
-        comp = e.get("competitions", [{}])[0]
-        if not comp.get("status", {}).get("type", {}).get("completed"):
-            continue
-        competitors = comp.get("competitors", [])
-        opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
-        if not opponent:
-            continue
-        opp_id = opponent.get("team", {}).get("id")
-        if not opp_id:
-            continue
-        completed.append({"date": e.get("date", ""), "event_id": e.get("id"), "opp_id": opp_id})
+    cache = {}
+    for team_id in team_ids:
+        season_stats = get_team_season_stats(team_id, season)
+        pts_pg = season_stats["pts_pg"] if season_stats else None
+        pts_allowed_pg = season_stats["pts_allowed_pg"] if season_stats else None
 
-    if not completed:
-        return None
-    completed.sort(key=lambda x: x["date"])
-    last_n = completed[-n:]
+        events = get_team_schedule_events(team_id, season)
+        completed = []
+        for e in events:
+            comp = e.get("competitions", [{}])[0]
+            if not comp.get("status", {}).get("type", {}).get("completed"):
+                continue
+            competitors = comp.get("competitors", [])
+            opponent = next((c for c in competitors if str(c.get("team", {}).get("id")) != str(team_id)), None)
+            if not opponent:
+                continue
+            opp_id = opponent.get("team", {}).get("id")
+            if not opp_id:
+                continue
+            completed.append({"date": e.get("date", ""), "event_id": e.get("id"), "opp_id": opp_id})
 
-    reb_allowed_games = []
-    ast_allowed_games = []
-    for g in last_n:
-        totals = _team_boxscore_totals(g["opp_id"], g["event_id"])
-        if totals is None:
-            continue
-        reb_allowed_games.append(totals["rebounds"])
-        ast_allowed_games.append(totals["assists"])
+        reb_allowed_pg, ast_allowed_pg = None, None
+        if completed:
+            completed.sort(key=lambda x: x["date"])
+            last_n = completed[-n:]
+            reb_allowed_games, ast_allowed_games = [], []
+            for g in last_n:
+                totals = _team_boxscore_totals(g["opp_id"], g["event_id"])
+                if totals is None:
+                    continue
+                reb_allowed_games.append(totals["rebounds"])
+                ast_allowed_games.append(totals["assists"])
+            if reb_allowed_games:
+                reb_allowed_pg = sum(reb_allowed_games) / len(reb_allowed_games)
+                ast_allowed_pg = sum(ast_allowed_games) / len(ast_allowed_games)
 
-    if not reb_allowed_games:
-        return None
-
-    return {
-        "rebounds_allowed_games": reb_allowed_games,
-        "assists_allowed_games": ast_allowed_games,
-        "rebounds_allowed_pg": round(sum(reb_allowed_games) / len(reb_allowed_games), 1),
-        "assists_allowed_pg": round(sum(ast_allowed_games) / len(ast_allowed_games), 1),
-        "games_counted": len(reb_allowed_games),
-    }
+        cache[str(team_id)] = {
+            "pts_pg": pts_pg,
+            "pts_allowed_pg": pts_allowed_pg,
+            "reb_allowed_pg": reb_allowed_pg,
+            "ast_allowed_pg": ast_allowed_pg,
+        }
+    return cache
 
 
 # ---------- period scoring: 1H, Q1, and full game totals ----------
@@ -1190,43 +1047,6 @@ def game_total_over_prob(team_a_stats, team_b_stats, total_line, std_dev=None):
     return round(prob, 3)
 
 
-def _stat_volatility_flag(values, avg):
-    """
-    Plain check: does this team's allowed stat swing wildly game to game,
-    or is it fairly consistent? If the gap between her best and worst game
-    in the sample is large relative to the average, the "this opponent
-    allows a lot" read is a lot less trustworthy for any single game -
-    it might just be an average built from two very different nights,
-    exactly like a team allowing 90 one night and 75 the next.
-    """
-    if not values or avg == 0:
-        return {"is_volatile": False, "spread": 0.0}
-    spread = (max(values) - min(values)) / avg
-    return {"is_volatile": spread >= ALLOWED_STAT_VOLATILITY_RATIO, "spread": round(spread, 2)}
-
-
-def build_allowed_reb_ast_note(allowed_data, opponent_team_full=None):
-    """
-    Display-ready summary of what this opponent allows in rebounds and
-    assists, plus a plain volatility flag for each. Returns None if there
-    isn't enough data to say anything meaningful yet.
-    """
-    if not allowed_data or allowed_data["games_counted"] < 2:
-        return None
-
-    reb_vol = _stat_volatility_flag(allowed_data["rebounds_allowed_games"], allowed_data["rebounds_allowed_pg"])
-    ast_vol = _stat_volatility_flag(allowed_data["assists_allowed_games"], allowed_data["assists_allowed_pg"])
-
-    return {
-        "opponent_team_full": opponent_team_full,
-        "rebounds_allowed_pg": allowed_data["rebounds_allowed_pg"],
-        "assists_allowed_pg": allowed_data["assists_allowed_pg"],
-        "games_counted": allowed_data["games_counted"],
-        "rebounds_volatile": reb_vol["is_volatile"],
-        "assists_volatile": ast_vol["is_volatile"],
-    }
-
-
 def spread_cover_prob(team_a_stats, team_b_stats, spread, std_dev=11.0):
     """
     Normal approximation of WNBA point-differential margin.
@@ -1251,47 +1071,6 @@ def expected_margin(team_a_stats, team_b_stats):
         return None
     return (team_a_stats["pts_pg"] - team_a_stats["pts_allowed_pg"]) - \
            (team_b_stats["pts_pg"] - team_b_stats["pts_allowed_pg"])
-
-
-# WNBA margins run much tighter than NBA's - a "double-digit blowout" here
-# is already a real outlier, not a mid-size margin, so this threshold is
-# set well below an NBA-style 20-25 point cutoff.
-BLOWOUT_MARGIN_THRESHOLD = 15
-# Only players averaging under this many minutes get discounted - a team's
-# actual starters play through most lopsided games and shouldn't be
-# penalized for a role player's early exit.
-BLOWOUT_LOW_MINUTES_CUTOFF = 20
-# How much to shrink a low-minutes player's floor probabilities toward 0
-# when a blowout is projected - a flat, modest discount rather than a
-# precisely-fit number (this whole effect is a directional judgment call,
-# not something the free data here can calibrate exactly).
-BLOWOUT_DISCOUNT_FACTOR = 0.85
-
-def apply_blowout_discount(floors, avg_minutes, proj_margin):
-    """
-    Shrinks floor probabilities toward 0 for a bench/low-minutes player
-    when the game is projected to be a lopsided blowout - in a lopsided
-    game she's more likely to see reduced minutes as the outcome becomes
-    decided early, which lowers her real chance of reaching any prop
-    threshold below what her normal-game sample implies. Applied only to
-    players under BLOWOUT_LOW_MINUTES_CUTOFF average minutes; starters are
-    left untouched since they generally still play most of a blowout.
-    Returns a new floors dict; does not mutate the input.
-    """
-    if proj_margin is None or avg_minutes is None:
-        return floors
-    if abs(proj_margin) < BLOWOUT_MARGIN_THRESHOLD or avg_minutes >= BLOWOUT_LOW_MINUTES_CUTOFF:
-        return floors
-    discounted = {}
-    for stat_key, thresholds in floors.items():
-        if not thresholds:
-            discounted[stat_key] = thresholds
-            continue
-        discounted[stat_key] = {
-            t: (round(p * BLOWOUT_DISCOUNT_FACTOR, 3) if p is not None else None)
-            for t, p in thresholds.items()
-        }
-    return discounted
 
 
 # ---------- absentee-aware scoring margin ----------
@@ -1596,59 +1375,6 @@ def get_team_home_away_split(team_id, season=SEASON):
             "pts_against_pg": round(sum(g["pts_against"] for g in games) / len(games), 1),
             "games_counted": len(games),
         }
-    return result if result else None
-
-
-def get_player_home_away_split(games, team_schedule_events, stat_key):
-    """
-    Splits a player's sampled games (from get_player_recent_gamelog) into
-    home/away buckets for a given stat, by matching each game's date
-    against the team's schedule events (which carry the homeAway flag) -
-    the player gamelog endpoint itself doesn't expose home/away directly,
-    so this joins the two data sources by date.
-
-    Returns {"home": {"avg": float, "games_counted": int},
-             "away": {...}} - a split is omitted if it has fewer than
-    HOME_AWAY_MIN_GAMES games or no games matched a schedule date at all.
-    """
-    # Build a date -> competitors lookup from the team's schedule. The
-    # actual home/away side for THIS team gets resolved per-game below
-    # (by matching against the opponent_team_id on the player's game
-    # entry), since a bare date key alone doesn't tell us which competitor
-    # is "this team" vs the opponent.
-    date_to_home_away = {}
-    for e in team_schedule_events:
-        comp = e.get("competitions", [{}])[0]
-        competitors = comp.get("competitors", [])
-        date_key = (e.get("date") or "")[:10]
-        if date_key:
-            date_to_home_away[date_key] = competitors
-
-    buckets = {"home": [], "away": []}
-    for g in games:
-        game_date = (g.get("date") or "")[:10]
-        if not game_date or game_date not in date_to_home_away:
-            continue
-        value = _extract_stat_value(g, stat_key)
-        if value is None:
-            continue
-        competitors = date_to_home_away[game_date]
-        # Determine this game's homeAway by finding which competitor is
-        # NOT the opponent listed on the player's game entry.
-        opp_id = g.get("opponent_team_id")
-        this_team_entry = next(
-            (c for c in competitors if str(c.get("team", {}).get("id")) != str(opp_id)), None
-        )
-        if not this_team_entry or this_team_entry.get("homeAway") not in ("home", "away"):
-            continue
-        buckets[this_team_entry["homeAway"]].append(value)
-
-    result = {}
-    for side in ("home", "away"):
-        vals = buckets[side]
-        if len(vals) < HOME_AWAY_MIN_GAMES:
-            continue
-        result[side] = {"avg": round(sum(vals) / len(vals), 1), "games_counted": len(vals)}
     return result if result else None
 
 
@@ -2071,97 +1797,6 @@ def detect_minutes_change(games):
 
 
 
-SHOT_VOLUME_CHANGE_THRESHOLD = MINUTES_CHANGE_THRESHOLD  # same bar as minutes
-
-def detect_shot_volume_change(games):
-    """
-    Same pattern as detect_minutes_change, but for field goals attempted -
-    catches a player whose usage (shot volume) is trending up or down even
-    when her minutes haven't moved much. Informational only, not modeled
-    into any probability - see detect_minutes_change docstring for why.
-    Returns None if FGA data wasn't found or there's too little history.
-    """
-    if len(games) < 2:
-        return None
-    fga_vals = []
-    for g in games:
-        v = _extract_stat_value(g, "fga")
-        if v is not None:
-            fga_vals.append(v)
-    if len(fga_vals) < 2:
-        return None
-
-    most_recent = fga_vals[-1]
-    prior_avg = sum(fga_vals[:-1]) / len(fga_vals[:-1])
-    if prior_avg == 0:
-        return None
-
-    pct_change = (most_recent - prior_avg) / prior_avg
-    return {
-        "most_recent_fga": round(most_recent, 1),
-        "prior_avg_fga": round(prior_avg, 1),
-        "pct_change": round(pct_change, 3),
-        "is_notable_bump": pct_change >= SHOT_VOLUME_CHANGE_THRESHOLD,
-        "is_notable_drop": pct_change <= -SHOT_VOLUME_CHANGE_THRESHOLD,
-    }
-
-
-RETURN_FROM_ABSENCE_MIN_MINUTES = 3  # a game with fewer than this many
-# minutes played is treated as "effectively did not play" for the purposes
-# of this heuristic (covers true DNPs plus token appearances).
-RETURN_FROM_ABSENCE_LOOKBACK_GAMES = 10  # how far back to scan for a gap
-RETURN_FROM_ABSENCE_FLAG_RECENT_GAMES = 2  # flag the most recent N games
-# back from an absence, not just the single game immediately after - a
-# player's conditioning/rhythm often takes more than one game to return.
-
-def detect_recent_return_from_absence(games):
-    """
-    HEURISTIC, NOT A CONFIRMED INJURY STATUS. Free data sources here don't
-    include an actual injury/DNP feed with reasons - this only looks at
-    whether a player logged near-zero minutes in a recent game and then
-    came back with real minutes, which could mean injury, illness, a
-    coach's decision (rest, rotation, benching), or a personal matter.
-    Always says "apparent absence" and "verify before relying on this",
-    never claims to know the cause.
-
-    Returns None if no such pattern is found in the last
-    RETURN_FROM_ABSENCE_LOOKBACK_GAMES games, or a dict describing the most
-    recent gap otherwise:
-      {"absence_game_date": str or None, "games_since_absence": int,
-       "games_sampled": int}
-    """
-    if len(games) < 2:
-        return None
-
-    recent = games[-RETURN_FROM_ABSENCE_LOOKBACK_GAMES:]
-    minutes_by_index = []
-    for g in recent:
-        v = _extract_stat_value(g, "minutes")
-        minutes_by_index.append(v)  # keep None as a placeholder to preserve ordering
-
-    if all(v is None for v in minutes_by_index):
-        return None
-
-    # Walk backward from the most recent game to find the closest prior gap
-    # (a near-zero-minutes game) that's since been followed by real minutes.
-    last_idx = len(recent) - 1
-    if minutes_by_index[last_idx] is None or minutes_by_index[last_idx] < RETURN_FROM_ABSENCE_MIN_MINUTES:
-        return None  # she's IN the apparent absence right now, not returning from one
-
-    for i in range(last_idx - 1, -1, -1):
-        v = minutes_by_index[i]
-        if v is not None and v < RETURN_FROM_ABSENCE_MIN_MINUTES:
-            games_since = last_idx - i
-            if games_since > RETURN_FROM_ABSENCE_FLAG_RECENT_GAMES:
-                return None  # gap is too far back to still be "recent"
-            return {
-                "absence_game_date": recent[i].get("date"),
-                "games_since_absence": games_since,
-                "games_sampled": len(recent),
-            }
-    return None
-
-
 def _extract_stat_value(game_entry, stat_key):
     """
     Looks up a stat's value in a single game entry's stats dict, trying
@@ -2382,15 +2017,39 @@ def prop_floor_probs(games, stat_key, thresholds=None):
 _gamelog_debug_printed = False
 _names_debug_printed = False
 
+SHRINKAGE_K = 8  # pseudo-games of league-average weight in bayesian_shrinkage
+PROJECTED_MINUTES_DELTA = 0.10  # re-derive a threshold if projected minutes
+# differ from her sampled-games average minutes by more than this fraction
+
+
 def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured_names=None,
-                      opponent_recent_defense_note=None, own_recent_offense_note=None,
-                      opponent_allowed_reb_ast_note=None,
-                      team_schedule_events=None, opponent_league_rank=None,
-                      league_rankings=None, proj_margin=None):
+                      opponent_league_rank=None, team_stats_cache=None):
+    """
+    Builds each starter's prop floors, then layers three current-season-only
+    accuracy improvements on top (see module-level docstrings):
+      1. Bayesian shrinkage of each raw hit-rate toward the league average
+         hit-rate for that stat (small samples pulled toward what's typical).
+      2. A minutes projection: if her likely minutes tonight look different
+         from her own sampled-games average by more than
+         PROJECTED_MINUTES_DELTA, the threshold is rescaled to match the
+         role she's actually playing right now before re-shrinking.
+      3. An opponent adjustment using season-long team defensive numbers
+         (team_stats_cache), and a usage boost if a top-2/3 scorer among
+         her team's starters is out.
+
+    team_injured_names/flag_missing_starters names are used ONLY for the UI
+    minutes_note and the usage_boost_if_starter_out call - never folded
+    into the shrunk probability itself as a silent adjustment elsewhere.
+    """
     global _gamelog_debug_printed, _names_debug_printed
     starters = get_team_starters(team_id, season)
     team_injured_names = team_injured_names or set()
-    results = []
+    team_stats_cache = team_stats_cache or {}
+
+    # First pass: fetch each starter's games and raw (unshrunk) floors, so
+    # compute_league_avg_hit_rate has a same-report peer group to average
+    # over before any shrinkage happens.
+    raw_players = []
     for p in starters:
         games = get_player_recent_gamelog(p["id"], season)
 
@@ -2419,18 +2078,74 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
         for stat_key in PROP_THRESHOLDS:
             floors[stat_key] = prop_floor_probs(games, stat_key)
 
-        # #5: discount a low-minutes player's floors if this game projects
-        # as a blowout (see apply_blowout_discount docstring). Computed
-        # from her own recent minutes sample, not season averages, so it
-        # reflects her actual current role.
-        blowout_discount_applied = False
+        raw_players.append({"player": p, "games": games, "floors": floors})
+
+    # Usage rank among this team's starters, by season-average points from
+    # the same games sample already fetched above (no extra network calls).
+    usage_scores = []
+    for rp in raw_players:
+        pts_vals = [v for v in (_extract_stat_value(g, "points") for g in rp["games"]) if v is not None]
+        avg_pts = sum(pts_vals) / len(pts_vals) if pts_vals else 0.0
+        usage_scores.append((rp["player"]["name"], avg_pts))
+    usage_scores.sort(key=lambda x: x[1], reverse=True)
+    starters_usage_rank = {name: i + 1 for i, (name, _avg) in enumerate(usage_scores)}
+
+    # League-average hit-rate per stat, computed once per report run from
+    # this same set of starters (the only "current season" population we
+    # have without a historical DB).
+    all_players_for_league_avg = [{"floors": rp["floors"], "games_sampled": len(rp["games"])} for rp in raw_players]
+    league_avg_by_stat = {
+        stat_key: compute_league_avg_hit_rate(all_players_for_league_avg, stat_key)
+        for stat_key in PROP_THRESHOLDS
+    }
+
+    results = []
+    for rp in raw_players:
+        p = rp["player"]
+        games = rp["games"]
+        floors = rp["floors"]
+
         minutes_sample = [v for v in (_extract_stat_value(g, "minutes") for g in games) if v is not None]
         avg_minutes = sum(minutes_sample) / len(minutes_sample) if minutes_sample else None
-        if proj_margin is not None and avg_minutes is not None:
-            new_floors = apply_blowout_discount(floors, avg_minutes, proj_margin)
-            if new_floors is not floors:
-                blowout_discount_applied = True
-                floors = new_floors
+        proj_minutes = project_minutes(games)
+
+        usage_boost = usage_boost_if_starter_out(p["name"], team_id, team_injured_names, starters_usage_rank)
+
+        adjusted_floors = {}
+        for stat_key, thresholds in floors.items():
+            league_avg = league_avg_by_stat.get(stat_key, 0.5)
+            adjusted_thresholds = {}
+            n_games = len(games)
+            for t, raw_prob in thresholds.items():
+                threshold = t
+                hit_rate = raw_prob
+
+                # Minutes-role reprojection: if her likely minutes tonight
+                # deviate meaningfully from her sampled-games average, scale
+                # the threshold to match the role she's actually playing,
+                # then recompute + re-shrink the hit-rate against that
+                # rescaled threshold instead of the flat original line.
+                if (proj_minutes is not None and avg_minutes and avg_minutes > 0
+                        and abs(proj_minutes - avg_minutes) / avg_minutes > PROJECTED_MINUTES_DELTA):
+                    new_t = threshold * (proj_minutes / avg_minutes)
+                    values = [v if v is not None else 0.0 for v in (_extract_stat_value(g, stat_key) for g in games)]
+                    if values:
+                        hits = sum(1 for v in values if v >= new_t)
+                        hit_rate = hits / len(values)
+                        threshold = t  # keep displaying the original bookmaker-style line
+
+                if hit_rate is None:
+                    adjusted_thresholds[t] = None
+                    continue
+
+                hits = hit_rate * n_games
+                shrunk = bayesian_shrinkage(hits, n_games, league_avg, k=SHRINKAGE_K)
+                adjusted = opponent_adjustment(stat_key, shrunk, opponent_team_id, team_stats_cache)
+                adjusted = adjusted * usage_boost if adjusted is not None else adjusted
+                if adjusted is not None:
+                    adjusted = max(0.0, min(1.0, adjusted))
+                adjusted_thresholds[t] = round(adjusted, 3) if adjusted is not None else None
+            adjusted_floors[stat_key] = adjusted_thresholds
 
         vs_opponent = None
         if opponent_team_id:
@@ -2459,61 +2174,15 @@ def get_player_props(team_id, opponent_team_id=None, season=SEASON, team_injured
                 f"vs {minutes_change['prior_avg_minutes']} min average)."
             )
 
-        return_from_absence = detect_recent_return_from_absence(games)
-        return_from_absence_note = None
-        if return_from_absence:
-            games_since = return_from_absence["games_since_absence"]
-            recency = "last game" if games_since == 1 else f"{games_since} games ago"
-            return_from_absence_note = f"Returned from an apparent absence as of {recency}."
-
-        home_away_split = None
-        if team_schedule_events:
-            home_away_split = get_player_home_away_split(games, team_schedule_events, "points")
-
-        # #3: how she's historically done vs top-tier defenses specifically,
-        # compared to her overall hit-rate. Uses the medium points threshold,
-        # same one used everywhere else on the page (Top Performers, etc.)
-        points_floors = floors.get(POINTS_STAT_KEY, {})
-        vs_top_defense_note = None
-        if points_floors:
-            sorted_thresholds = sorted(points_floors.keys())
-            idx = min(MEDIUM_THRESHOLD_INDEX, len(sorted_thresholds) - 1)
-            medium_t = sorted_thresholds[idx]
-            own_hit_rate = points_floors.get(medium_t)
-            vs_top_defense_note = build_vs_top_defense_note(games, league_rankings, medium_t, own_hit_rate)
-
-        # #4: shot-volume (FGA) trend, informational only - same treatment
-        # as the minutes note above, never fed into any probability.
-        shot_volume_change = detect_shot_volume_change(games)
-        shot_volume_note = None
-        if shot_volume_change and shot_volume_change["is_notable_bump"]:
-            shot_volume_note = (
-                f"Shooting more than usual lately ({shot_volume_change['most_recent_fga']} FGA "
-                f"vs {shot_volume_change['prior_avg_fga']} FGA average)."
-            )
-        elif shot_volume_change and shot_volume_change["is_notable_drop"]:
-            shot_volume_note = (
-                f"Shooting less than usual lately ({shot_volume_change['most_recent_fga']} FGA "
-                f"vs {shot_volume_change['prior_avg_fga']} FGA average)."
-            )
-
         results.append({
             "name": p["name"],
             "games_sampled": len(games),
             "floors": floors,
+            "adjusted_floors": adjusted_floors,
             "recent_games": games,
             "vs_opponent": vs_opponent,
             "minutes_note": minutes_note,
-            "opponent_recent_defense": opponent_recent_defense_note,
-            "opponent_allowed_reb_ast": opponent_allowed_reb_ast_note,
-            "own_recent_offense": own_recent_offense_note,
             "opponent_league_rank": opponent_league_rank,
-            "return_from_absence_note": return_from_absence_note,
-            "home_away_points_split": home_away_split,
-            "vs_top_defense_note": vs_top_defense_note,
-            "shot_volume_note": shot_volume_note,
-            "shot_volume_data_found": shot_volume_change is not None,
-            "blowout_discount_applied": blowout_discount_applied,
         })
     return results
 
@@ -2607,6 +2276,16 @@ def build_report():
     # ranking number.
     league_rankings = get_league_rankings()
 
+    # team_stats_cache backs opponent_adjustment(): season-long pts/reb/ast
+    # allowed per game for every team playing today, built once per run
+    # (not per player) from data already fetched for the spread model plus
+    # one box-score-derived reb/ast-allowed pass per team.
+    team_ids_today = set()
+    for g in games:
+        team_ids_today.add(g["home_team_id"])
+        team_ids_today.add(g["away_team_id"])
+    team_stats_cache = build_team_stats_cache(team_ids_today)
+
     for g in games:
         home_id, away_id = g["home_team_id"], g["away_team_id"]
 
@@ -2615,58 +2294,22 @@ def build_report():
         home_stats = get_team_season_stats(home_id)
         away_stats = get_team_season_stats(away_id)
 
-        # Each note describes a team's OWN recent defense, labeled with that
-        # team's OWN name. Which side it gets attached to (as the opponent's
-        # defense, for a given player) is decided below when building props.
-        home_recent_defense = build_recent_defense_note(get_team_recent_defense(home_id), home_stats, g["home_team_name"])
-        away_recent_defense = build_recent_defense_note(get_team_recent_defense(away_id), away_stats, g["away_team_name"])
-
-        # Same pattern as recent defense above, but for a team's OWN
-        # scoring - attached to that team's OWN players (not the opponent's),
-        # since it's context on how the player's own offense is trending.
-        home_recent_offense = build_recent_offense_note(get_team_recent_offense(home_id), home_stats, g["home_team_name"])
-        away_recent_offense = build_recent_offense_note(get_team_recent_offense(away_id), away_stats, g["away_team_name"])
-
-        # Rebounds/assists allowed - real fetch (box scores, not the free
-        # schedule-endpoint reuse the points version gets), so this is
-        # kept to a small recent-game sample. Same "labeled with that
-        # team's own name" pattern as recent defense above.
-        home_allowed_reb_ast = build_allowed_reb_ast_note(get_team_recent_allowed_reb_ast(home_id), g["home_team_name"])
-        away_allowed_reb_ast = build_allowed_reb_ast_note(get_team_recent_allowed_reb_ast(away_id), g["away_team_name"])
-
         home_flags, home_injured_names = flag_missing_starters(home_id)
         away_flags, away_injured_names = flag_missing_starters(away_id)
 
         home_schedule_events = get_team_schedule_events(home_id)
         away_schedule_events = get_team_schedule_events(away_id)
 
-        # Projected margin from home's perspective (positive = home
-        # favored). Same underlying formula as spread_cover_prob, computed
-        # once here so both sides' props can use it for the blowout
-        # discount (#5) without re-deriving it per player.
-        proj_margin_home_perspective = expected_margin(home_stats, away_stats)
-
-        # Each side's players face the OPPONENT's defense, so the note
-        # attached to a player is the opponent's recent-defense numbers,
-        # their OWN team's recent offense note, and the opponent's
-        # league-wide defensive rank (how good the opponent is at
-        # defending, in league-wide context - not just this one matchup).
+        # Each side's players face the OPPONENT's defense (handled inside
+        # get_player_props via team_stats_cache + opponent_adjustment), with
+        # a usage boost if one of THEIR OWN top scorers is out
+        # (team_injured_names covers that team's own missing starters).
         home_props = get_player_props(home_id, opponent_team_id=away_id, team_injured_names=home_injured_names,
-                                       opponent_recent_defense_note=away_recent_defense,
-                                       own_recent_offense_note=home_recent_offense,
-                                       opponent_allowed_reb_ast_note=away_allowed_reb_ast,
-                                       team_schedule_events=home_schedule_events,
                                        opponent_league_rank=league_rankings.get(str(away_id)),
-                                       league_rankings=league_rankings,
-                                       proj_margin=proj_margin_home_perspective)
+                                       team_stats_cache=team_stats_cache)
         away_props = get_player_props(away_id, opponent_team_id=home_id, team_injured_names=away_injured_names,
-                                       opponent_recent_defense_note=home_recent_defense,
-                                       own_recent_offense_note=away_recent_offense,
-                                       opponent_allowed_reb_ast_note=home_allowed_reb_ast,
-                                       team_schedule_events=away_schedule_events,
                                        opponent_league_rank=league_rankings.get(str(home_id)),
-                                       league_rankings=league_rankings,
-                                       proj_margin=-proj_margin_home_perspective if proj_margin_home_perspective is not None else None)
+                                       team_stats_cache=team_stats_cache)
 
         # Mismatch warnings (#1): checked in both directions since either
         # team could be the one with the extreme offense or defense.
@@ -2897,7 +2540,7 @@ def _render_top_points_performers(top_points):
     return f"""
     <section class="top-performers">
       <h2 class="tp-heading">Today's Top Points Performers</h2>
-      <p class="tp-subheading">Points is the only stat with opponent-defense data behind it, so this list weighs 4 things: her own hit rate on a medium-difficulty line, whether she hit it in her last head-to-head vs this opponent, whether the opponent has recently been allowing more points than usual, and whether the opponent ranks weak defensively over their last 10 games.</p>
+      <p class="tp-subheading">Ranked by her adjusted probability (shrunk toward the league average and adjusted for the opponent's season-long defensive numbers) on the medium-difficulty points line.</p>
       <div class="tp-grid">
         {''.join(items)}
       </div>
@@ -2911,7 +2554,6 @@ def _render_top_trend_performers(top_trends):
     for rank, tp in enumerate(top_trends, start=1):
         stat_label = STAT_DISPLAY_NAMES.get(tp["stat_key"], tp["stat_key"].upper())
         pct = tp["hit_rate"] * 100
-        boost = '<span class="boost-tag">&#9733; matches recent vs opponent</span>' if tp["vs_opp_aligned"] else ""
         reasons_html = ""
         if tp.get("reasons"):
             reasons_html = '<ul class="tp-reasons">' + "".join(f"<li>{r}</li>" for r in tp["reasons"]) + "</ul>"
@@ -2932,7 +2574,6 @@ def _render_top_trend_performers(top_trends):
               <span class="collapsible-chevron">&#9660;</span>
             </div>
             <div class="collapsible-body">
-              {boost}
               {reasons_html}
             </div>
           </div>
@@ -2940,7 +2581,7 @@ def _render_top_trend_performers(top_trends):
     return f"""
     <section class="top-performers">
       <h2 class="tp-heading">Today's Top Rebounds/Assists/PRA/3PM Trends</h2>
-      <p class="tp-subheading">Rebounds, assists, and PRA (points+rebounds+assists combined) now factor in how many of these the opponent has actually been allowing lately, plus whether her own team's offense is trending up - not just her own hit rate. Threes still only uses her own hit rate and head-to-head, since there's no reliable opponent-allowed-threes signal being tracked yet.</p>
+      <p class="tp-subheading">Ranked by her adjusted probability (shrunk toward the league average and adjusted for the opponent's season-long defensive numbers) on each stat's medium-difficulty line - her single best trend stat is shown.</p>
       <div class="tp-grid">
         {''.join(items)}
       </div>
@@ -2950,19 +2591,21 @@ def _render_top_trend_performers(top_trends):
 
 # --- Bet Builder pick-quality rules (plain-English version) ---
 #
-# A "safe" pick now needs to pass TWO checks, not one:
-#   1. Hit rate check (old rule) - she's cleared this mark often recently.
-#   2. Real-line check (new rule) - the mark itself is a number a
-#      bookmaker would actually list, not a joke floor near zero that
-#      everyone clears every night (this is what was causing things like
-#      "0+ threes" to show up as a "pick").
+# A "safe" pick needs to pass two checks:
+#   1. Confidence check - the adjusted (shrunk + opponent-adjusted) prob
+#      clears min_confidence. Shrinkage already makes this a more
+#      realistic number than a raw small-sample hit-rate, so the bar is
+#      raised to CONFIDENCE_THRESHOLD (0.72) accordingly - see module
+#      constant below.
+#   2. Real-line check - the mark itself is a number a bookmaker would
+#      actually list, not a joke floor near zero that everyone clears
+#      every night (this is what was causing things like "0+ threes" to
+#      show up as a "pick").
 #
-# On top of that, every pick also gets a comfort check (see
-# _closest_call_margin below): did she clear the mark with room to spare,
-# or was she barely scraping over it? A high hit rate with a lot of
-# barely-cleared games is NOT the same as a safe pick - that's exactly
-# the Lacan/Reese pattern (looks safe on paper, misses when one bad
-# shooting night happens).
+# The old thin-margin/cold-night/efficiency checks are gone: with
+# shrinkage already pulling small, noisy samples toward the league
+# average, a separate "was this close" layer on top would just be
+# re-litigating the same small-sample noise the shrinkage exists to fix.
 #
 # MIN_BETTABLE_THRESHOLD = the lowest number per stat that's still a real
 # betting line. Anything below this is thrown out even at 100% hit rate.
@@ -2974,145 +2617,15 @@ MIN_BETTABLE_THRESHOLD = {
     "pra": 12,
 }
 
-# A game counts as a "close call" if she landed at the threshold or up to
-# 2 above it - i.e. she cleared it, but barely.
-CLOSE_CALL_WINDOW = 2
-
-# If 40%+ of her recent games were close calls on this exact mark, we
-# label the pick "thin margin" instead of treating it the same as a
-# comfortable pick.
-THIN_MARGIN_RATIO = 0.4
-
-# Cold night miss check now scales with the size of the threshold itself,
-# rather than a flat point gap. A flat gap (e.g. "missed by 5") flags
-# almost every player on almost every line, since one bad shooting game
-# in a 10-game sample is normal, not rare. Scaling by the threshold means
-# missing a 12+ mark by 5 (a big relative miss) gets flagged, while
-# missing a 25+ mark by 5 (a smaller relative miss for a high-volume
-# scorer) does not.
-COLD_NIGHT_MISS_RATIO = 0.35
-
-
-def _closest_call_margin(games, stat_key, threshold):
-    """
-    Plain-English safety check: out of her recent games, how many times
-    did she barely clear this line (land within CLOSE_CALL_WINDOW points
-    above it) instead of clearing it with real room to spare?
-
-    A player can have a great hit rate (say 9 of her last 10 games) and
-    still be a bad bet if most of those clears were by 1-2 points - one
-    slightly-worse shooting night and she misses. This function is what
-    catches that, instead of only looking at the hit rate number.
-
-    This only looks at games where she cleared the mark. It says nothing
-    about how bad her missed games were, that is what
-    _cold_night_floor_check covers separately.
-    """
-    values = []
-    for g in games:
-        v = _extract_stat_value(g, stat_key)
-        values.append(v if v is not None else 0.0)
-    if not values:
-        return None
-
-    close_calls = sum(1 for v in values if threshold <= v <= threshold + CLOSE_CALL_WINDOW)
-    return {
-        "close_calls": close_calls,
-        "games_checked": len(values),
-        "worst_game": min(values),
-    }
-
-
-def _cold_night_floor_check(games, stat_key, threshold):
-    """
-    Real miss check, separate from the close-call check above. A hit
-    rate can look great (100% of last 10) while still hiding a bad cold
-    shooting night buried in the sample, since a good hit rate only
-    needs most games to clear the mark, not all of them.
-
-    The miss is only flagged if her worst recent game fell short by
-    COLD_NIGHT_MISS_RATIO or more of the threshold itself (relative, not
-    a flat point gap), so a small relative miss on a high-volume line
-    does not get treated the same as a real collapse on a low one.
-    """
-    values = []
-    for g in games:
-        v = _extract_stat_value(g, stat_key)
-        values.append(v if v is not None else 0.0)
-    if not values or threshold <= 0:
-        return None
-
-    worst = min(values)
-    shortfall = threshold - worst
-    shortfall_ratio = shortfall / threshold
-    had_real_miss = shortfall_ratio >= COLD_NIGHT_MISS_RATIO
-    return {
-        "worst_game": worst,
-        "shortfall": shortfall,
-        "shortfall_ratio": round(shortfall_ratio, 3),
-        "had_real_miss": had_real_miss,
-        "games_checked": len(values),
-    }
-
-
-def _efficiency_floor_check(games, stat_key, points_threshold):
-    """
-    Points-only efficiency check. Looks at makes-per-attempt on her
-    worst-efficiency recent game, not just whether she hit the points
-    mark, since a player can hit a points mark on pure volume (a lot of
-    shots) while shooting very poorly, and that poor shooting is a real
-    signal even on nights the points mark happened to still get hit.
-
-    Needs both points and fga (field goals attempted) on the same game
-    to compute a shooting percentage. Returns None if fga data was not
-    found for any games (undocumented API, field-name dependent) or
-    stat_key is not points.
-    """
-    if stat_key != "points":
-        return None
-
-    game_efficiencies = []
-    for g in games:
-        pts = _extract_stat_value(g, "points")
-        fga = _extract_stat_value(g, "fga")
-        if pts is None or fga is None or fga <= 0:
-            continue
-        game_efficiencies.append({"pts": pts, "fga": fga, "fg_pct": pts / (2 * fga)})
-        # rough makes estimate from points assumes a mix of 2s, so pts /
-        # (2 * fga) is a conservative floor on true FG%, not an exact
-        # make count, since points includes free throws and threes too.
-        # Used only as a relative comparison across her own games, not
-        # presented as her real shooting percentage.
-
-    if len(game_efficiencies) < 3:
-        return None
-
-    worst_eff_game = min(game_efficiencies, key=lambda x: x["fg_pct"])
-    avg_fg_pct = sum(g["fg_pct"] for g in game_efficiencies) / len(game_efficiencies)
-
-    is_volume_carried = (
-        worst_eff_game["fg_pct"] < avg_fg_pct * 0.5
-        and worst_eff_game["pts"] >= points_threshold
-    )
-
-    return {
-        "worst_pts": worst_eff_game["pts"],
-        "worst_fga": worst_eff_game["fga"],
-        "avg_fg_pct": round(avg_fg_pct, 3),
-        "worst_fg_pct": round(worst_eff_game["fg_pct"], 3),
-        "is_volume_carried": is_volume_carried,
-        "games_checked": len(game_efficiencies),
-    }
-
 
 def _lowest_safe_threshold(prob_dict, min_confidence=CONFIDENCE_THRESHOLD, stat_key=None):
     """
-    Given a {threshold: prob} dict, returns the LOWEST threshold whose
-    prob still clears min_confidence AND is a real, bookmaker-sized
-    number (see MIN_BETTABLE_THRESHOLD). This is the fix for picks like
-    "0+ threes" - technically a 100% hit rate, but too low a number for
-    any book to actually offer, so it's not a usable bet and no longer
-    qualifies here.
+    Given a {threshold: prob} dict (adjusted_floors for one stat), returns
+    the LOWEST threshold whose prob still clears min_confidence AND is a
+    real, bookmaker-sized number (see MIN_BETTABLE_THRESHOLD). This is the
+    fix for picks like "0+ threes" - technically a 100% hit rate, but too
+    low a number for any book to actually offer, so it's not a usable bet
+    and no longer qualifies here.
     """
     if not prob_dict:
         return None
@@ -3129,15 +2642,16 @@ def _lowest_safe_threshold(prob_dict, min_confidence=CONFIDENCE_THRESHOLD, stat_
 
 def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PICKS_LIMIT):
     """
-    Bet Builder pick extractor. A pick has to pass THREE checks now,
-    not one:
-      1. Hit rate check: she's cleared this mark often enough recently.
+    Bet Builder pick extractor. A pick has to pass two checks:
+      1. Confidence check: the adjusted (shrunk + opponent-adjusted)
+         probability clears min_confidence.
       2. Real-line check: the mark is a number a book would actually
          post, not a near-zero floor that's meaningless as a bet.
-      3. Comfort check: most of her recent games clear the mark with real
-         room to spare, not by barely scraping over it. Picks that fail
-         this get a plain "thin margin" warning and get sorted lower,
-         instead of being shown as if they're just as safe as the rest.
+
+    The old thin-margin/cold-night/efficiency comfort checks are gone -
+    adjusted_floors already accounts for small-sample noise via Bayesian
+    shrinkage, so a separate "was this close" layer on top would just be
+    re-litigating noise the shrinkage exists to smooth out.
 
     Picks are grouped by game, and a game is only included if it has at
     least 2 qualifying picks, since the point of this section is bet
@@ -3164,60 +2678,13 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
             (g["home_team"], g["home_team_full"], True, g["home_players"]),
         ):
             for p in players:
-                recent_games = p.get("recent_games") or []
-
-                for stat_key, floors in p["floors"].items():
+                for stat_key, floors in p["adjusted_floors"].items():
                     best = _lowest_safe_threshold(floors, min_confidence, stat_key=stat_key)
                     if not best:
                         continue
 
                     stat_label = STAT_DISPLAY_NAMES.get(stat_key, stat_key)
-                    reasons = [f"hit this mark in {round(best['prob']*100)}% of her last {p['games_sampled']} games"]
-
-                    # Comfort check: is she clearing this with room to
-                    # spare, or scraping over it most nights?
-                    is_thin_margin = False
-                    if recent_games:
-                        margin_info = _closest_call_margin(recent_games, stat_key, best["threshold"])
-                        if margin_info and margin_info["games_checked"] > 0:
-                            close_ratio = margin_info["close_calls"] / margin_info["games_checked"]
-                            if close_ratio >= THIN_MARGIN_RATIO:
-                                is_thin_margin = True
-                                reasons.append(
-                                    f"THIN MARGIN: she barely cleared this mark (within {CLOSE_CALL_WINDOW}) in "
-                                    f"{margin_info['close_calls']} of her last {margin_info['games_checked']} games - "
-                                    f"one slightly-worse game and this misses"
-                                )
-                            else:
-                                reasons.append("usually clears this with real room to spare, not just barely")
-
-                        # Cold night check: separate from the close-call
-                        # check above, this looks at whether her single
-                        # worst recent game missed the mark by a real
-                        # relative margin, which a high hit rate alone
-                        # can hide.
-                        cold_check = _cold_night_floor_check(recent_games, stat_key, best["threshold"])
-                        if cold_check and cold_check["had_real_miss"]:
-                            is_thin_margin = True
-                            reasons.append(
-                                f"COLD NIGHT RISK: her worst game in this sample was {cold_check['worst_game']:g} "
-                                f"{stat_label}, {cold_check['shortfall']:g} short of this mark"
-                            )
-
-                        # Efficiency check, points only: was her points
-                        # mark ever hit mainly on volume (a lot of shots,
-                        # low shooting percentage) rather than efficient
-                        # scoring? A points total alone cannot tell that
-                        # story, since a cold shooting night can still
-                        # clear a points mark if she just keeps shooting.
-                        eff_check = _efficiency_floor_check(recent_games, stat_key, best["threshold"])
-                        if eff_check and eff_check["is_volume_carried"]:
-                            is_thin_margin = True
-                            reasons.append(
-                                f"EFFICIENCY RISK: her worst shooting game in this sample was "
-                                f"{eff_check['worst_pts']:g} points on {eff_check['worst_fga']:g} shots, "
-                                f"carried by volume, not efficiency"
-                            )
+                    reasons = [f"adjusted probability {round(best['prob']*100)}% over her last {p['games_sampled']} games"]
 
                     vs_opp = p.get("vs_opponent")
                     if vs_opp and vs_opp.get("games"):
@@ -3226,21 +2693,11 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         if v is not None and v >= best["threshold"]:
                             reasons.append(f"also hit {best['threshold']}+ {stat_label} in her last meeting vs this opponent")
 
-                    # Short, one-clause versions of the context notes -
-                    # same underlying data as the All Games section, just
+                    # Short, one-clause version of the minutes note - same
+                    # underlying data as the All Games section, just
                     # condensed to fit a pick-card reason line.
                     if p.get("minutes_note"):
                         reasons.append(p["minutes_note"].rstrip("."))
-                    if p.get("shot_volume_note"):
-                        reasons.append(p["shot_volume_note"].rstrip("."))
-                    vs_top_d = p.get("vs_top_defense_note")
-                    if vs_top_d and vs_top_d.get("is_notable_drop"):
-                        reasons.append(
-                            f'only {vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% vs top-{TOP_TIER_RANK_CUTOFF} defenses '
-                            f'(vs {vs_top_d["overall_hit_rate"]*100:.0f}% overall)'
-                        )
-                    if p.get("blowout_discount_applied"):
-                        reasons.append("floor discounted for projected blowout")
 
                     game_picks.append({
                         "type": stat_label,
@@ -3253,7 +2710,7 @@ def extract_top_picks(report, min_confidence=CONFIDENCE_THRESHOLD, limit=TOP_PIC
                         "prob": best["prob"],
                         "fair_odds": fair_decimal_odds(best["prob"]),
                         "reasons": reasons,
-                        "thin_margin": is_thin_margin,
+                        "thin_margin": False,
                     })
 
         # --- team spread covers (best line per team, not every threshold) ---
@@ -3807,36 +3264,24 @@ def render_html(report):
                 block.append('<div class="player-block">')
                 block.append(f'<p class="player-name">{p["name"]} <span class="player-team">({side_full})</span> '
                              f'<span class="games-sampled">last {p["games_sampled"]} games</span></p>')
-                for stat_key, floors in p["floors"].items():
+                for stat_key, floors in p["adjusted_floors"].items():
                     if not floors:
                         continue
                     block.append('<div class="stat-group">')
                     block.append(f'<span class="stat-group-label">{STAT_DISPLAY_NAMES.get(stat_key, stat_key)}</span>')
                     block.append('<div class="pill-row">')
                     for t, prob in floors.items():
+                        if prob is None:
+                            continue
                         pct = prob * 100
                         tier = "pill-hot" if pct >= 70 else ("pill-warm" if pct >= 40 else "pill-cool")
                         block.append(f'<span class="pill {tier}">{t}+ &middot; {pct:.0f}%</span>')
                     block.append('</div>')
                     block.append('</div>')
 
-                recent_def = p.get("opponent_recent_defense")
-                if recent_def:
-                    sign = "+" if recent_def["pct_change"] >= 0 else ""
-                    pct_txt = f"{sign}{recent_def['pct_change'] * 100:.0f}%"
-                    opp_name = recent_def.get("opponent_team_full") or "Opponent"
-                    def_txt = (f"{opp_name} allowed {recent_def['recent_pts_allowed_pg']:.1f} points per "
-                               f"game on average over their last {recent_def['games_counted']} games "
-                               f"(season avg {recent_def['season_pts_allowed_pg']:.1f}, {pct_txt})")
-                    if recent_def["is_notable"]:
-                        block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {def_txt}</div>')
-                    else:
-                        block.append(f'<p class="vs-opp-line">{def_txt}</p>')
-
                 opp_rank = p.get("opponent_league_rank")
                 if opp_rank:
-                    opp_name = (recent_def or {}).get("opponent_team_full") or "Opponent"
-                    rank_txt = (f"{opp_name} ranks #{opp_rank['def_rank']} in defense out of "
+                    rank_txt = (f"Opponent ranks #{opp_rank['def_rank']} in defense out of "
                                 f"{opp_rank['teams_ranked']} teams in the league, over the last 10 games.")
                     block.append(f'<p class="vs-opp-line">{rank_txt}</p>')
 
@@ -3860,50 +3305,9 @@ def render_html(report):
                     else:
                         block.append(f'<p class="vs-opp-line vs-opp-empty">vs opponent: {vs_opp["reason"]}</p>')
 
-                own_off = p.get("own_recent_offense")
-                if own_off:
-                    sign = "+" if own_off["pct_change"] >= 0 else ""
-                    pct_txt = f"{sign}{own_off['pct_change'] * 100:.0f}%"
-                    team_name = own_off.get("team_full") or side_full
-                    off_txt = (f"{team_name} scored {own_off['recent_pts_for_pg']:.1f} points per game "
-                               f"on average over their last {own_off['games_counted']} games "
-                               f"(season avg {own_off['season_pts_for_pg']:.1f}, {pct_txt})")
-                    if own_off["is_notable"]:
-                        block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {off_txt}</div>')
-                    else:
-                        block.append(f'<p class="vs-opp-line">{off_txt}</p>')
-
-                home_away_split = p.get("home_away_points_split")
-                if home_away_split:
-                    split_parts = []
-                    for side_key in ("home", "away"):
-                        s = home_away_split.get(side_key)
-                        if s:
-                            split_parts.append(f'{side_key}: {s["avg"]:.1f} pts/g ({s["games_counted"]}g)')
-                    if split_parts:
-                        block.append(f'<p class="vs-opp-line">Points, home/away split: {" &middot; ".join(split_parts)}</p>')
-
-                if p.get("return_from_absence_note"):
-                    block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["return_from_absence_note"]}</div>')
-
                 if p.get("minutes_note"):
                     block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["minutes_note"]}</div>')
 
-                if p.get("shot_volume_note"):
-                    block.append(f'<div class="flag-chip flag-chip-inline">&#9888; {p["shot_volume_note"]}</div>')
-
-                vs_top_d = p.get("vs_top_defense_note")
-                if vs_top_d and vs_top_d.get("is_notable_drop"):
-                    block.append(
-                        f'<div class="flag-chip flag-chip-inline">&#9888; Hits line '
-                        f'{vs_top_d["hit_rate_vs_top_defense"] * 100:.0f}% vs top-{TOP_TIER_RANK_CUTOFF} defenses '
-                        f'({vs_top_d["games_vs_top_defense"]}g) vs {vs_top_d["overall_hit_rate"] * 100:.0f}% overall.</div>'
-                    )
-
-                if p.get("blowout_discount_applied"):
-                    block.append(
-                        '<div class="flag-chip flag-chip-inline">&#9888; Floors discounted for projected blowout.</div>'
-                    )
                 block.append('</div>')
             block.append('</div>')
         block.append('</div>')  # close collapsible-body
@@ -4487,9 +3891,9 @@ if __name__ == "__main__":
     )
     games_with_props = sum(1 for g in report if g["home_players"] or g["away_players"])
     total_players = sum(len(g["home_players"]) + len(g["away_players"]) for g in report)
-    players_with_shot_volume_data = sum(
+    players_with_minutes_data = sum(
         1 for g in report for p in (g["home_players"] + g["away_players"])
-        if p.get("shot_volume_data_found")
+        if project_minutes(p.get("recent_games") or []) is not None
     )
     if len(report) == 0:
         print("WARNING: 0 games in report - scoreboard fetch may have failed for all dates queried (check WARNING lines above).")
@@ -4500,11 +3904,12 @@ if __name__ == "__main__":
         print("  WARNING: no spread data on any game - check get_team_season_stats() field names.")
     if len(report) > 0 and games_with_props == 0:
         print("  WARNING: no player props on any game - check get_player_recent_gamelog() field names.")
-    if total_players > 0 and players_with_shot_volume_data == 0:
-        print("  WARNING: no shot-volume (FGA) notes on any player - the FGA field-name guess in "
-              "STAT_KEY_ALIASES/FGA_COMBINED_ALIASES likely doesn't match what ESPN actually returns. "
+    if total_players > 0 and players_with_minutes_data == 0:
+        print("  WARNING: no minutes data on any player - the minutes field-name guess in "
+              "STAT_KEY_ALIASES likely doesn't match what ESPN actually returns. project_minutes() and "
+              "the minutes-role reprojection in get_player_props() will silently no-op without it. "
               "This fails silently (no crash) so it's easy to miss - check a raw gamelog response's "
-              "stat field names and update the fga aliases if needed.")
+              "stat field names and update the minutes aliases if needed.")
 
     games_with_period_data = sum(
         1 for g in report
@@ -4516,6 +3921,6 @@ if __name__ == "__main__":
         print("  WARNING: no first half/quarter data on any game - _team_linescore_from_summary is not "
               "matching ESPN's actual linescores field structure in the /summary boxscore response, or "
               "get_team_period_scoring is failing to fetch/parse box scores for every recent game. "
-              "This fails silently (no crash), same pattern as the FGA warning above - check a raw "
+              "This fails silently (no crash), same pattern as the minutes warning above - check a raw "
               "/summary?event= response's boxscore.teams[].linescores structure and confirm the value "
               "field name matches what _team_linescore_from_summary expects.")
