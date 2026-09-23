@@ -197,11 +197,12 @@ def usage_boost_if_starter_out(player_name, team_id, missing_names, starters_usa
         return 1.07
     return 1.0
 
-# The scoreboard's "today" is computed from local time at a fixed UTC+6
-# offset, rather than raw UTC, so late-evening runs still pull the games
-# still upcoming locally rather than jumping ahead to the next UTC calendar
-# day. This offset is applied silently and isn't shown anywhere in the UI.
-LOCAL_UTC_OFFSET_HOURS = 6
+# The scoreboard's "today" is computed from local time at a fixed UTC+8
+# offset (China), rather than raw UTC, so late-evening runs still pull the
+# games still upcoming locally rather than jumping ahead to the next UTC
+# calendar day. This offset is applied silently and isn't shown anywhere in
+# the UI (except each game card's local date badge, added below).
+LOCAL_UTC_OFFSET_HOURS = 8
 
 def local_now():
     return datetime.utcnow() + timedelta(hours=LOCAL_UTC_OFFSET_HOURS)
@@ -568,24 +569,37 @@ def get_all_teams():
 
 # ---------- schedule ----------
 
+GAMES_WINDOW_HOURS = 48  # show games starting from "now" through this many hours out
+
 def get_todays_games():
     """
     ESPN's scoreboard 'dates' parameter buckets games by ESPN's own internal
     scheduling day, which does not reliably align with any specific
     requester's local calendar day - a 7 AM local game can land under a
     different ESPN-side date than expected. Instead of trusting a single
-    date guess, we pull a window (yesterday, today, tomorrow in local terms)
-    and filter every event by its actual kickoff timestamp compared to the
-    local "now" - keeping anything from the start of local today through
-    the end of local today, plus anything already in progress.
+    date guess, we pull a window of scoreboard dates wide enough to cover
+    GAMES_WINDOW_HOURS from local "now", then filter every event by its
+    actual kickoff timestamp - keeping anything from local "now" through
+    "now" + GAMES_WINDOW_HOURS, plus anything already in progress (so a
+    game that started slightly before "now" isn't dropped mid-game).
     """
-    local_today = local_now().replace(hour=0, minute=0, second=0, microsecond=0)
-    local_tomorrow_start = local_today + timedelta(days=1)
+    local_now_dt = local_now()
+    window_end = local_now_dt + timedelta(hours=GAMES_WINDOW_HOURS)
 
-    date_a = (local_today - timedelta(days=1)).strftime("%Y%m%d")
-    date_b = local_today.strftime("%Y%m%d")
-    date_c = local_tomorrow_start.strftime("%Y%m%d")
-    dates_to_query = [date_a, date_b, date_c]
+    # Query every ESPN scoreboard "day" bucket that could plausibly contain
+    # something in [local_now, window_end], plus a day of padding on each
+    # side since ESPN's own bucketing doesn't line up exactly with our
+    # local calendar day.
+    first_query_day = (local_now_dt - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    last_query_day = (window_end + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    dates_to_query = []
+    d = first_query_day
+    while d <= last_query_day:
+        dates_to_query.append(d.strftime("%Y%m%d"))
+        d += timedelta(days=1)
+
+    date_a = dates_to_query[0]
+    date_c = dates_to_query[-1]
 
     seen_event_ids = set()
     games = []
@@ -644,9 +658,9 @@ def get_todays_games():
             comp = e.get("competitions", [{}])[0]
             status_state = comp.get("status", {}).get("type", {}).get("state")  # 'pre','in','post'
 
-            is_todays_local_date = local_today <= event_dt_local < local_tomorrow_start
+            is_within_window = local_now_dt <= event_dt_local <= window_end
             is_in_progress = status_state == "in"
-            if not (is_todays_local_date or is_in_progress):
+            if not (is_within_window or is_in_progress):
                 continue
 
             competitors = comp.get("competitors", [])
@@ -664,8 +678,16 @@ def get_todays_games():
                 "away_team_id": away["team"]["id"],
                 "away_team_abbr": away["team"].get("abbreviation"),
                 "away_team_name": away["team"].get("displayName") or away["team"].get("abbreviation"),
+                # Local (China, GMT+8) tipoff datetime, used for the date
+                # badge on each game card so a game shows on the date it
+                # actually plays locally, not ESPN's UTC/internal date.
+                "local_datetime": event_dt_local,
             })
-            print(f"DEBUG get_todays_games returning {len(games)} games: {[g['away_team_abbr']+'@'+g['home_team_abbr'] for g in games]}")
+
+    # Sort soonest-first so the page reads top-to-bottom in kickoff order
+    # across the full 48-hour window, rather than in scoreboard-fetch order.
+    games.sort(key=lambda g: g["local_datetime"])
+    print(f"DEBUG get_todays_games returning {len(games)} games: {[(g['away_team_abbr']+'@'+g['home_team_abbr'], g['local_datetime'].strftime('%Y-%m-%d %H:%M')) for g in games]}")
     return games
 
 
@@ -2339,6 +2361,7 @@ def build_report():
 
         entry = {
             "matchup": f"{g['away_team_name']} @ {g['home_team_name']}",
+            "local_datetime": g.get("local_datetime"),
             "home_team": g["home_team_abbr"],
             "away_team": g["away_team_abbr"],
             "home_team_full": g["home_team_name"],
@@ -3119,6 +3142,9 @@ def render_html(report):
         block.append(f'<div>')
         block.append(f'<div class="court-line"></div>')
         block.append(f'<h2>{g["away_team_full"]} <span class="at-sign">@</span> {g["home_team_full"]}</h2>')
+        game_dt = g.get("local_datetime")
+        if game_dt:
+            block.append(f'<p class="tipoff-line">{game_dt.strftime("%a %d %b")} &middot; {game_dt.strftime("%H:%M")} China time (GMT+8)</p>')
         rest_txt = f'{g["away_team"]} rest {g["away_rest_days"]}d &middot; {g["home_team"]} rest {g["home_rest_days"]}d'
         block.append(f'<p class="rest-line">{rest_txt}</p>')
         block.append(f'</div>')
@@ -3437,6 +3463,7 @@ h1 {{
 }}
 .at-sign {{ color: var(--text-dim); font-weight: 400; }}
 .rest-line {{ color: var(--text-dim); font-size: 0.82em; margin: 8px 0 0; }}
+.tipoff-line {{ color: var(--teal, #2dd4bf); font-size: 0.82em; font-weight: 700; margin: 6px 0 0; }}
 .matchup-facts {{ list-style: none; margin: 10px 0 0; padding: 0; }}
 .matchup-facts li {{ color: var(--text-dim); font-size: 0.82em; line-height: 1.5; margin: 6px 0 0; padding-left: 14px; position: relative; }}
 .matchup-facts li::before {{ content: "\\2022"; position: absolute; left: 0; color: var(--teal); }}
